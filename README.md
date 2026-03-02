@@ -1,30 +1,38 @@
 # PS-Last_app_signin
 
-A PowerShell script that audits Azure AD app registrations for inactivity and unused credentials using the Microsoft Graph API. Exports a risk-classified CSV report.
+A PowerShell script that audits Azure AD app registrations for inactivity and unused credentials. Uses **Log Analytics (Azure Monitor)** as the primary sign-in data source and Microsoft Graph for app/SP metadata. Exports a risk-classified CSV report.
 
 ## What It Does
 
-- Fetches all **app registrations** and their **service principals** from your tenant
-- Pulls **sign-in activity** from the Graph beta endpoint (delegated, app-only, and managed identity)
-- Evaluates each app against a 180-day inactivity window
+- Queries **Log Analytics** via KQL for 180 days of interactive, non-interactive, and service principal sign-in activity
+- Fetches all **app registrations** and **service principals** from Microsoft Graph
+- Combines both sources for the most complete activity picture per app
 - Classifies each app with a **risk level** (High / Medium / Low / Active / Ignore)
 - Exports a full CSV report and prints a summary + high-risk list to the console
 
 ## Prerequisites
 
 - **PowerShell 5.1+** or **PowerShell 7+**
-- **Microsoft.Graph** PowerShell module
+- Required modules:
 
 ```powershell
-Install-Module Microsoft.Graph -Scope CurrentUser
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+Install-Module Microsoft.Graph.Applications    -Scope CurrentUser
+Install-Module Az.OperationalInsights          -Scope CurrentUser
 ```
 
-- An account (or service principal) with the following Graph permissions:
-  - `Application.Read.All`
-  - `AuditLog.Read.All`
-  - `Directory.Read.All`
+- A **Log Analytics workspace** connected to your Azure AD sign-in logs (`SigninLogs`, `AADNonInteractiveUserSignInLogs`, `AADServicePrincipalSignInLogs`)
+- An account with the following permissions:
+  - **Microsoft Graph**: `Application.Read.All`, `Directory.Read.All` *(requires admin consent)*
+  - **Azure**: read access to the Log Analytics workspace (e.g. `Log Analytics Reader`)
 
-> These permissions require **admin consent** in your tenant.
+## Configuration
+
+Before running, set your workspace ID at the top of the script:
+
+```powershell
+$WorkspaceId = "<your-log-analytics-workspace-id>"
+```
 
 ## Usage
 
@@ -32,7 +40,7 @@ Install-Module Microsoft.Graph -Scope CurrentUser
 .\last_signin.ps1
 ```
 
-The script will prompt you to authenticate via `Connect-MgGraph`. After it runs, a CSV file named `UnusedApps_YYYYMMDD.csv` is written to the current directory.
+The script will prompt you to authenticate via `Connect-MgGraph` and `Connect-AzAccount`. After it runs, a CSV file named `UnusedApps_YYYYMMDD.csv` is written to the current directory.
 
 ## Output Columns
 
@@ -46,16 +54,19 @@ The script will prompt you to authenticate via `Connect-MgGraph`. After it runs,
 | `HasServicePrincipal` | Whether a service principal exists |
 | `SPEnabled` | Whether the service principal is enabled |
 | `SPType` | Service principal type |
-| `LastDelegatedSignIn` | Most recent delegated sign-in timestamp |
-| `LastAppOnlySignIn` | Most recent app-only sign-in timestamp |
-| `LastOverallActivity` | Most recent sign-in across all vectors |
+| `LastInteractiveSignIn` | Most recent interactive user sign-in (from Log Analytics) |
+| `LastNonInteractiveSignIn` | Most recent non-interactive sign-in (from Log Analytics) |
+| `LastSPSignIn` | Most recent service principal sign-in (from Log Analytics) |
+| `LastActivityOverall` | Most recent sign-in across all vectors |
 | `DaysSinceActivity` | Days since last sign-in |
+| `TotalSignIns180d` | Total sign-in count over the last 180 days |
 | `HasSecrets` | Whether client secrets exist |
 | `SecretExpiry` | Expiry of the most recent secret |
 | `SecretsExpired` | Whether all secrets are expired |
 | `HasCerts` | Whether certificates exist |
 | `CertExpiry` | Expiry of the most recent certificate |
 | `CertsExpired` | Whether all certificates are expired |
+| `HasLiveCredentials` | Whether any non-expired credential exists |
 | `PermissionCount` | Number of required resource access entries |
 | `UnusedReason` | Why the app was flagged (if applicable) |
 | `RiskLevel` | Active / High / Medium / Low / Ignore |
@@ -65,16 +76,16 @@ The script will prompt you to authenticate via `Connect-MgGraph`. After it runs,
 
 | Risk Level | Criteria |
 |---|---|
-| **High** | Never used or inactive >180 days **and** has active credentials |
-| **Medium** | Never used or inactive >180 days, no credentials |
+| **High** | Never used or inactive >180 days **and** has at least one live (non-expired) credential |
+| **Medium** | Never used or inactive >180 days, no live credentials |
 | **Low** | No service principal, SP disabled, or all credentials expired |
-| **Active** | Recently used (within 180 days) |
+| **Active** | Has sign-in activity within the last 180 days |
 | **Ignore** | App created less than 30 days ago (insufficient data) |
 
 ## Notes
 
-- Sign-in activity data comes from the **beta** Graph endpoint (`/reports/servicePrincipalSignInActivities`) and may not reflect real-time data.
-- The 180-day cutoff is set at the top of the script and can be adjusted by changing the `$cutoffDate` variable.
+- Sign-in data requires Azure AD diagnostic logs to be routed to a Log Analytics workspace. If your workspace has no data for a given app, the SP `signInActivity` field from Graph is used as a fallback.
+- The 180-day window is baked into the KQL query and can be adjusted there.
 - The script is **read-only** — it makes no changes to your tenant.
 
 ## License
