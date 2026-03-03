@@ -1,6 +1,6 @@
 #Requires -Modules Microsoft.Graph.Authentication, Microsoft.Graph.Applications, Az.OperationalInsights
 
-Connect-MgGraph -Scopes "Application.Read.All", "Directory.Read.All"
+Connect-MgGraph -Scopes "Application.Read.All", "Directory.Read.All", "AuditLog.Read.All"
 Connect-AzAccount  # or use existing session
 
 #region --- CONFIG ---
@@ -12,13 +12,11 @@ $ExportPath  = "UnusedApps_$(Get-Date -Format 'yyyyMMdd').csv"
 Write-Host "Querying Log Analytics for sign-in activity..." -ForegroundColor Cyan
 
 $kqlQuery = @"
-union
-    (SigninLogs                         | where TimeGenerated > ago(180d) | extend SignInType = "Interactive"),
-    (AADNonInteractiveUserSignInLogs    | where TimeGenerated > ago(180d) | extend SignInType = "NonInteractive"),
-    (AADServicePrincipalSignInLogs      | where TimeGenerated > ago(180d) | extend SignInType = "ServicePrincipal")
+union isfuzzy=true
+    (SigninLogs                    | where TimeGenerated > ago(180d) | extend SignInType = "Interactive"),
+    (AADServicePrincipalSignInLogs | where TimeGenerated > ago(180d) | extend SignInType = "ServicePrincipal")
 | summarize
     LastInteractive      = maxif(TimeGenerated, SignInType == "Interactive"),
-    LastNonInteractive   = maxif(TimeGenerated, SignInType == "NonInteractive"),
     LastServicePrincipal = maxif(TimeGenerated, SignInType == "ServicePrincipal"),
     TotalSignIns         = count(),
     LastActivity         = max(TimeGenerated)
@@ -60,7 +58,6 @@ $report = foreach ($app in $allApps) {
 
     # --- Sign-in dates from LA ---
     $lastInteractive      = if ($la.LastInteractive      -and $la.LastInteractive      -ne "0001-01-01T00:00:00") { [datetime]$la.LastInteractive }      else { $null }
-    $lastNonInteractive   = if ($la.LastNonInteractive   -and $la.LastNonInteractive   -ne "0001-01-01T00:00:00") { [datetime]$la.LastNonInteractive }   else { $null }
     $lastServicePrincipal = if ($la.LastServicePrincipal -and $la.LastServicePrincipal -ne "0001-01-01T00:00:00") { [datetime]$la.LastServicePrincipal } else { $null }
     $lastOverall          = if ($la.LastActivity         -and $la.LastActivity         -ne "0001-01-01T00:00:00") { [datetime]$la.LastActivity }         else { $null }
 
@@ -68,7 +65,7 @@ $report = foreach ($app in $allApps) {
     $spFallback = if ($sp.SignInActivity.LastSignInDateTime) { [datetime]$sp.SignInActivity.LastSignInDateTime } else { $null }
 
     # True last activity across all vectors
-    $allDates = @($lastInteractive, $lastNonInteractive, $lastServicePrincipal, $lastOverall, $spFallback) |
+    $allDates = @($lastInteractive, $lastServicePrincipal, $lastOverall, $spFallback) |
                 Where-Object { $_ } | Sort-Object -Descending
     $trueLastActivity = $allDates | Select-Object -First 1
 
@@ -121,7 +118,6 @@ $report = foreach ($app in $allApps) {
         SPType                    = $sp.ServicePrincipalType
         # Sign-in breakdown
         LastInteractiveSignIn     = $lastInteractive
-        LastNonInteractiveSignIn  = $lastNonInteractive
         LastSPSignIn              = $lastServicePrincipal
         LastActivityOverall       = $trueLastActivity
         DaysSinceActivity         = $daysSinceActivity
