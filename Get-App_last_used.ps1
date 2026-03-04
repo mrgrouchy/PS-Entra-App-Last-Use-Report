@@ -32,10 +32,14 @@ function Get-AllGraphPages {
 
   do {
     $resp = Invoke-MgGraphRequest -Uri $Uri -Method GET
-    if ($resp.value) { $results += $resp.value }
+    if ($null -ne $resp.value) { $results += $resp.value }
 
-    $next = $resp.PSObject.Properties['@odata.nextLink']
-    $Uri = if ($next) { $next.Value } else { $null }
+    if ($resp -is [System.Collections.IDictionary]) {
+      $Uri = $resp['@odata.nextLink']
+    } else {
+      $next = $resp.PSObject.Properties['@odata.nextLink']
+      $Uri = if ($next) { $next.Value } else { $null }
+    }
 
   } while ($Uri)
 
