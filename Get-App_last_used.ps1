@@ -1,19 +1,3 @@
-<#
-.SYNOPSIS
-  Pull Service Principal last sign-in activity (beta reports dataset), paginate past 1000,
-  pull all service principals (v1.0), then join locally and compute a "LastUsed" timestamp
-  as the max of all available activity timestamps.
-
-.REQUIREMENTS
-  - Microsoft.Graph PowerShell module
-  - Graph permissions (delegated): AuditLog.Read.All + Directory.Read.All (or equivalent)
-    Note: Your tenant may also require directory roles like Reports Reader / Security Reader.
-
-.NOTES
-  - /beta/reports/servicePrincipalSignInActivities returns max 1000 per page; use @odata.nextLink.
-  - The reports dataset returns only service principals with activity; join fills null for never-used.
-#>
-
 param(
   [int]$UnusedDays = 180,
   [switch]$IncludeNeverUsed,
@@ -23,146 +7,289 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Get-AllGraphPages {
-  param(
-    [Parameter(Mandatory)] [string] $Uri
-  )
+# ------------------------------------------------------------
+# Graph connection
+# ------------------------------------------------------------
 
-  $all = New-Object System.Collections.Generic.List[object]
+$scopes = @(
+  "AuditLog.Read.All",
+  "Directory.Read.All",
+  "Application.Read.All",
+  "AppRoleAssignment.ReadWrite.All",
+  "DelegatedPermissionGrant.Read.All"
+)
+
+Connect-MgGraph -Scopes $scopes | Out-Null
+
+# ------------------------------------------------------------
+# Paging helper
+# ------------------------------------------------------------
+
+function Get-AllGraphPages {
+  param([string]$Uri)
+
+  $results = @()
 
   do {
-    $resp = Invoke-MgGraphRequest -Method GET -Uri $Uri
+    $resp = Invoke-MgGraphRequest -Uri $Uri -Method GET
+    if ($resp.value) { $results += $resp.value }
 
-    if ($resp.value) { $resp.value | ForEach-Object { $all.Add($_) } }
-
-    # StrictMode-safe: only read the property if it exists
-    $nextProp = $resp.PSObject.Properties['@odata.nextLink']
-    $Uri = if ($null -ne $nextProp) { [string]$nextProp.Value } else { $null }
+    $next = $resp.PSObject.Properties['@odata.nextLink']
+    $Uri = if ($next) { $next.Value } else { $null }
 
   } while ($Uri)
 
-  return $all
+  return $results
 }
 
-function Get-MaxLastUsed {
-  param([object]$Activity)
+# ------------------------------------------------------------
+# Dictionary-safe property navigation
+# ------------------------------------------------------------
 
-  if (-not $Activity) { return $null }
+function Get-ValueByPath {
+  param($obj, $path)
 
-  $paths = @(
-    'lastSignInActivity.lastSignInDateTime'
-    'delegatedClientSignInActivity.lastSignInDateTime'
-    'delegatedResourceSignInActivity.lastSignInDateTime'
-    'applicationAuthenticationClientSignInActivity.lastSignInDateTime'
-    'applicationAuthenticationResourceSignInActivity.lastSignInDateTime'
-  )
+  $cur = $obj
+  foreach ($p in $path.Split(".")) {
 
-  function Get-ValueByPath {
-    param([object]$Obj, [string]$Path)
+    if ($null -eq $cur) { return $null }
 
-    $cur = $Obj
-    foreach ($seg in $Path.Split('.')) {
-      if ($null -eq $cur) { return $null }
-
-      if ($cur -is [System.Collections.IDictionary]) {
-        if (-not $cur.Contains($seg)) { return $null }
-        $cur = $cur[$seg]
-      } else {
-        $p = $cur.PSObject.Properties[$seg]
-        if (-not $p) { return $null }
-        $cur = $p.Value
-      }
+    if ($cur -is [System.Collections.IDictionary]) {
+      if (!$cur.Contains($p)) { return $null }
+      $cur = $cur[$p]
     }
-    return $cur
-  }
-
-  $dates = foreach ($p in $paths) {
-    $v = Get-ValueByPath -Obj $Activity -Path $p
-    if ($v) {
-      try { [datetime]$v } catch { $null }
+    else {
+      $prop = $cur.PSObject.Properties[$p]
+      if (!$prop) { return $null }
+      $cur = $prop.Value
     }
   }
 
-  $dates = $dates | Where-Object { $_ -is [datetime] }
-  if (-not $dates) { return $null }
-  ($dates | Sort-Object -Descending | Select-Object -First 1)
+  return $cur
 }
 
-# --- Connect (interactive delegated) ---
-# If you're already connected, this is fine; it won't hurt.
-$scopes = @("AuditLog.Read.All","Directory.Read.All")
-Connect-MgGraph -Scopes $scopes | Out-Null
+# ------------------------------------------------------------
+# Extract all activity timestamps
+# ------------------------------------------------------------
 
-Write-Host "Pulling /beta/reports/servicePrincipalSignInActivities (paged)..." -ForegroundColor Cyan
-$activityUri = "https://graph.microsoft.com/beta/reports/servicePrincipalSignInActivities?`$top=1000"
-$activity = Get-AllGraphPages -Uri $activityUri
-Write-Host ("  Activity rows: {0}" -f $activity.Count) -ForegroundColor DarkCyan
+function Get-ActivityTimes {
 
-# Build lookup by appId (GUID) - reliable
+  param($activity)
+
+  if (!$activity) {
+    return [pscustomobject]@{
+      LastUsedUtc = $null
+      DelegatedClientUtc = $null
+      DelegatedResourceUtc = $null
+      AppAuthClientUtc = $null
+      AppAuthResourceUtc = $null
+    }
+  }
+
+  $roll = Get-ValueByPath $activity "lastSignInActivity.lastSignInDateTime"
+  $dcli = Get-ValueByPath $activity "delegatedClientSignInActivity.lastSignInDateTime"
+  $dres = Get-ValueByPath $activity "delegatedResourceSignInActivity.lastSignInDateTime"
+  $acli = Get-ValueByPath $activity "applicationAuthenticationClientSignInActivity.lastSignInDateTime"
+  $ares = Get-ValueByPath $activity "applicationAuthenticationResourceSignInActivity.lastSignInDateTime"
+
+  $dates = @()
+
+  foreach ($d in @($roll,$dcli,$dres,$acli,$ares)) {
+    if ($d) { $dates += [datetime]$d }
+  }
+
+  $last = if ($dates) { ($dates | Sort-Object -Descending | Select-Object -First 1) } else { $null }
+
+  [pscustomobject]@{
+    LastUsedUtc = $last
+    DelegatedClientUtc = $dcli
+    DelegatedResourceUtc = $dres
+    AppAuthClientUtc = $acli
+    AppAuthResourceUtc = $ares
+  }
+
+}
+
+# ------------------------------------------------------------
+# Dependency checks
+# ------------------------------------------------------------
+
+function Get-AppRoleAssignments {
+
+  param($spId)
+
+  $uri = "https://graph.microsoft.com/v1.0/servicePrincipals/$spId/appRoleAssignedTo?`$top=999"
+
+  $resp = Invoke-MgGraphRequest -Uri $uri -Method GET
+
+  $items = @($resp.value)
+
+  return $items.Count
+}
+
+function Get-OAuthGrantsClient {
+
+  param($spId)
+
+  $uri = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$spId'"
+
+  $resp = Invoke-MgGraphRequest -Uri $uri -Method GET
+
+  return @($resp.value).Count
+}
+
+function Get-OAuthGrantsResource {
+
+  param($spId)
+
+  $uri = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=resourceId eq '$spId'"
+
+  $resp = Invoke-MgGraphRequest -Uri $uri -Method GET
+
+  return @($resp.value).Count
+}
+
+function Get-AppInfo {
+
+  param($appId)
+
+  $uri = "https://graph.microsoft.com/v1.0/applications?`$filter=appId eq '$appId'&`$select=id,passwordCredentials,keyCredentials"
+
+  $resp = Invoke-MgGraphRequest -Uri $uri -Method GET
+
+  $app = $resp.value | Select-Object -First 1
+
+  if (!$app) {
+    return [pscustomobject]@{ ObjectId = $null; HasCredentials = $false }
+  }
+
+  $hasCreds = ($app.passwordCredentials.Count -gt 0) -or ($app.keyCredentials.Count -gt 0)
+
+  return [pscustomobject]@{
+    ObjectId       = $app.id
+    HasCredentials = $hasCreds
+  }
+}
+
+# ------------------------------------------------------------
+# Pull activity dataset
+# ------------------------------------------------------------
+
+Write-Host "Fetching activity dataset..." -ForegroundColor Cyan
+
+$activity = Get-AllGraphPages "https://graph.microsoft.com/beta/reports/servicePrincipalSignInActivities?`$top=1000"
+
+Write-Host "Activity rows: $($activity.Count)"
+
+# Build lookup by appId
+
 $activityByAppId = @{}
+
 foreach ($a in $activity) {
 
-  # Works for hashtables/dictionaries
-  $appId = $null
   if ($a -is [System.Collections.IDictionary]) {
-    $appId = $a['appId']
-  } else {
-    $appIdProp = $a.PSObject.Properties['appId']
-    if ($appIdProp) { $appId = $appIdProp.Value }
+    $appId = $a["appId"]
+  }
+  else {
+    $appId = $a.appId
   }
 
   if ($appId) {
-    $activityByAppId[[string]$appId] = $a
+    $activityByAppId[$appId] = $a
   }
+
 }
 
-Write-Host "Pulling /v1.0/servicePrincipals (paged)..." -ForegroundColor Cyan
-$spUri = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,appId,displayName,servicePrincipalType,accountEnabled&`$top=999"
-$servicePrincipals = Get-AllGraphPages -Uri $spUri
-Write-Host ("  Service principals: {0}" -f $servicePrincipals.Count) -ForegroundColor DarkCyan
+# ------------------------------------------------------------
+# Pull service principals
+# ------------------------------------------------------------
 
-$cutoff = (Get-Date).ToUniversalTime().AddDays(-[double]$UnusedDays)
+Write-Host "Fetching service principals..." -ForegroundColor Cyan
 
-Write-Host "Joining and calculating LastUsed (max of all activity timestamps)..." -ForegroundColor Cyan
+$servicePrincipals = Get-AllGraphPages "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,accountEnabled&`$top=999"
+
+Write-Host "Service Principals: $($servicePrincipals.Count)"
+
+# ------------------------------------------------------------
+# Build report
+# ------------------------------------------------------------
+
+$cutoff = (Get-Date).ToUniversalTime().AddDays(-$UnusedDays)
+
 $report = foreach ($sp in $servicePrincipals) {
-  $act = $null
-if ($sp.appId) {
-  $act = $activityByAppId[[string]$sp.appId]
-}
-  $lastUsed = Get-MaxLastUsed -Activity $act
 
-  # If user didn't request never-used, optionally exclude later
-  [pscustomobject]@{
-    DisplayName         = $sp.displayName
-    AppId               = $sp.appId
-    ServicePrincipalId  = $sp.id
-    ServicePrincipalType= $sp.servicePrincipalType
-    AccountEnabled      = $sp.accountEnabled
-    LastUsedUtc         = $lastUsed
-    Status              = if (-not $lastUsed) { "NeverUsed" }
-                          elseif ($lastUsed -lt $cutoff) { "Stale>$UnusedDays" }
-                          else { "Active" }
+  $act = $activityByAppId[$sp.appId]
+
+  $times = Get-ActivityTimes $act
+
+  $roleAssignments = Get-AppRoleAssignments $sp.id
+  $oauthClient = Get-OAuthGrantsClient $sp.id
+  $oauthResource = Get-OAuthGrantsResource $sp.id
+  $appInfo = Get-AppInfo $sp.appId
+  $hasCreds = $appInfo.HasCredentials
+
+  $reasons = @()
+
+  if ($times.LastUsedUtc -ge $cutoff) { $reasons += "RecentActivity" }
+
+  if ($times.DelegatedResourceUtc) { $reasons += "UsedAsAPI" }
+
+  if ($times.AppAuthResourceUtc) { $reasons += "UsedAsAPIAppOnly" }
+
+  if ($roleAssignments -gt 0) { $reasons += "AppRoleAssignments" }
+
+  if ($oauthClient -gt 0) { $reasons += "OAuthClientGrants" }
+
+  if ($oauthResource -gt 0) { $reasons += "OAuthResourceGrants" }
+
+  if ($hasCreds) { $reasons += "CredentialsPresent" }
+
+  $safe = $false
+
+  if (!$reasons -and (!$times.LastUsedUtc -or $times.LastUsedUtc -lt $cutoff)) {
+    $safe = $true
   }
+
+  [pscustomobject]@{
+
+    DisplayName = $sp.displayName
+    AppId = $sp.appId
+    AppRegistrationObjectId = $appInfo.ObjectId
+    ServicePrincipalId = $sp.id
+    ServicePrincipalType = $sp.servicePrincipalType
+    AccountEnabled = $sp.accountEnabled
+
+    LastUsedUtc = $times.LastUsedUtc
+    DelegatedClientUtc = $times.DelegatedClientUtc
+    DelegatedResourceUtc = $times.DelegatedResourceUtc
+    AppAuthClientUtc = $times.AppAuthClientUtc
+    AppAuthResourceUtc = $times.AppAuthResourceUtc
+
+    RoleAssignments = $roleAssignments
+    OAuthClientGrants = $oauthClient
+    OAuthResourceGrants = $oauthResource
+    HasCredentials = $hasCreds
+
+    SafeToDisable = $safe
+    WhyNotSafe = ($reasons -join ";")
+  }
+
 }
 
-if (-not $IncludeNeverUsed) {
+if (!$IncludeNeverUsed) {
   $report = $report | Where-Object { $_.LastUsedUtc }
 }
 
-# Sort: never used at bottom unless included; then oldest first for cleanup views
-$report = $report | Sort-Object -Property @{Expression="LastUsedUtc";Descending=$false}, DisplayName
+$report = $report | Sort-Object LastUsedUtc
 
-$matched = @($report | Where-Object { $_.LastUsedUtc }).Count
-$never   = @($report | Where-Object { -not $_.LastUsedUtc }).Count
-Write-Host "Matched with activity: $matched | No activity matched: $never" -ForegroundColor Yellow
+Write-Host "Report rows: $($report.Count)" -ForegroundColor Green
 
-Write-Host ("Done. Rows: {0}" -f ($report | Measure-Object).Count) -ForegroundColor Green
+$report | Format-Table DisplayName,LastUsedUtc,SafeToDisable,WhyNotSafe -AutoSize
 
-# Output to screen
-$report | Select-Object DisplayName, AppId, ServicePrincipalId, ServicePrincipalType, AccountEnabled, LastUsedUtc, Status
-
-# Optional CSV
 if ($OutCsv) {
-  $report | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutCsv
-  Write-Host "Wrote CSV: $OutCsv" -ForegroundColor Green
+
+  $report | Export-Csv $OutCsv -NoTypeInformation
+
+  Write-Host "CSV exported to $OutCsv"
+
 }
