@@ -1,97 +1,100 @@
 # PS-Last_app_signin
 
-A PowerShell script that audits Azure AD / Entra ID app registrations for inactivity and unused credentials. Uses **Log Analytics / Microsoft Sentinel** for interactive + service principal sign-ins, and the **Entra audit log API** for non-interactive sign-ins. Exports a risk-classified CSV report.
+A PowerShell script that audits Entra ID / Azure AD service principals for inactivity using the **Microsoft Graph API** exclusively — no Log Analytics workspace required. Exports a report identifying apps that are safe to disable.
 
 ## What It Does
 
-- Queries **Log Analytics** via KQL for 180 days of interactive and service principal sign-in activity
-  - Uses `SigninLogs` and `AADServicePrincipalSignInLogs`
-- Queries the **Entra audit log API** (`/beta/auditLogs/signIns`) for the last 180 days of non-interactive user sign-ins
-- Fetches all **app registrations** and **service principals** from Microsoft Graph
-- Combines all sources for the most complete activity picture per app
-- Classifies each app with a **risk level** (High / Medium / Low / Active / Ignore)
-- Exports a full CSV report and prints a summary + high-risk list to the console
+- Fetches the full **service principal sign-in activity** dataset from Graph (`/beta/reports/servicePrincipalSignInActivities`)
+- Fetches all **service principals** from Graph (`/v1.0/servicePrincipals`)
+- For each service principal, checks:
+  - Last sign-in across all activity vectors (delegated, app-only, rollup)
+  - App role assignments (granted API permissions)
+  - OAuth2 permission grants (as client and as resource)
+  - Whether the app registration has active credentials (secrets or certificates)
+- Flags each app as **SafeToDisable** or explains **why not** via reason tags
+- Optionally exports a full CSV report
 
 ## Prerequisites
 
 - **PowerShell 5.1+** or **PowerShell 7+**
-- Required modules:
+- Microsoft Graph PowerShell SDK (authentication module):
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
-Install-Module Microsoft.Graph.Applications    -Scope CurrentUser
-Install-Module Az.OperationalInsights          -Scope CurrentUser
 ```
 
-- A **Log Analytics workspace** with `SigninLogs` and `AADServicePrincipalSignInLogs` connected.
-- An account with the following permissions:
-  - **Microsoft Graph**: `Application.Read.All`, `Directory.Read.All` *(requires admin consent)*
-  - **Azure**: read access to the Log Analytics workspace (e.g. `Log Analytics Reader`)
-
-## Configuration
-
-Before running, set your workspace ID at the top of the script:
-
-```powershell
-$WorkspaceId = "<your-log-analytics-workspace-id>"
-```
-
-The script validates this value and exits if the placeholder is still present.
+- An account with admin consent for the following Graph scopes:
+  - `AuditLog.Read.All`
+  - `Directory.Read.All`
+  - `Application.Read.All`
+  - `AppRoleAssignment.ReadWrite.All`
+  - `DelegatedPermissionGrant.Read.All`
 
 ## Usage
 
 ```powershell
-.\last_signin.ps1
+# Basic run — apps inactive for 180+ days, excluding never-used apps
+.\Get-App_last_used.ps1
+
+# Custom inactivity threshold
+.\Get-App_last_used.ps1 -UnusedDays 90
+
+# Include apps that have never had any sign-in activity
+.\Get-App_last_used.ps1 -IncludeNeverUsed
+
+# Export to CSV
+.\Get-App_last_used.ps1 -OutCsv .\report.csv
+
+# Combine options
+.\Get-App_last_used.ps1 -UnusedDays 90 -IncludeNeverUsed -OutCsv .\report.csv
 ```
 
-The script will prompt you to authenticate via `Connect-MgGraph` and `Connect-AzAccount`. After it runs, a CSV file named `UnusedApps_YYYYMMDD.csv` is written to the current directory.
+## Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `-UnusedDays` | int | `180` | Number of days of inactivity before an app is considered unused |
+| `-IncludeNeverUsed` | switch | off | Include service principals with no recorded sign-in activity at all |
+| `-OutCsv` | string | `""` | Path to export a CSV report; if empty, no file is written |
 
 ## Output Columns
 
 | Column | Description |
 |---|---|
-| `DisplayName` | App registration display name |
+| `DisplayName` | Service principal display name |
 | `AppId` | Application (client) ID |
-| `ObjectId` | App registration object ID |
-| `SignInAudience` | Target audience (single tenant, multi, etc.) |
-| `CreatedDaysAgo` | How many days ago the app was created |
-| `HasServicePrincipal` | Whether a service principal exists |
-| `SPEnabled` | Whether the service principal is enabled |
-| `SPType` | Service principal type |
-| `LastInteractiveSignIn` | Most recent interactive user sign-in (from Log Analytics) |
-| `LastNonInteractiveSignIn` | Most recent non-interactive sign-in (from Entra audit logs, 180-day window) |
-| `LastSPSignIn` | Most recent service principal sign-in (from Log Analytics) |
-| `LastActivityOverall` | Most recent sign-in across all vectors |
-| `DaysSinceActivity` | Days since last sign-in |
-| `TotalSignIns180d` | Total sign-in count over the last 180 days |
-| `HasSecrets` | Whether client secrets exist |
-| `SecretExpiry` | Expiry of the most recent secret |
-| `SecretsExpired` | Whether all secrets are expired |
-| `HasCerts` | Whether certificates exist |
-| `CertExpiry` | Expiry of the most recent certificate |
-| `CertsExpired` | Whether all certificates are expired |
-| `HasLiveCredentials` | Whether any non-expired credential exists |
-| `PermissionCount` | Number of required resource access entries |
-| `UnusedReason` | Why the app was flagged (if applicable) |
-| `RiskLevel` | Active / High / Medium / Low / Ignore |
-| `Notes` | App registration notes field |
+| `AppRegistrationObjectId` | Object ID of the backing app registration (null for external/managed SPs) |
+| `ServicePrincipalId` | Object ID of the service principal |
+| `ServicePrincipalType` | Application / ManagedIdentity / Legacy / etc. |
+| `AccountEnabled` | Whether the service principal is enabled |
+| `LastUsedUtc` | Most recent sign-in across all activity vectors |
+| `DelegatedClientUtc` | Last delegated sign-in where this app acted as client |
+| `DelegatedResourceUtc` | Last delegated sign-in where this app acted as resource (API) |
+| `AppAuthClientUtc` | Last app-only sign-in where this app acted as client |
+| `AppAuthResourceUtc` | Last app-only sign-in where this app acted as resource (API) |
+| `RoleAssignments` | Number of app role assignments granted to this SP |
+| `OAuthClientGrants` | Number of OAuth2 permission grants where this SP is the client |
+| `OAuthResourceGrants` | Number of OAuth2 permission grants where this SP is the resource |
+| `HasCredentials` | Whether the app registration has active secrets or certificates |
+| `SafeToDisable` | `True` if the app has no recent activity and no dependency signals |
+| `WhyNotSafe` | Semicolon-separated list of reasons the app was not flagged safe |
 
-## Risk Classification
+## Why Not Safe — Reason Tags
 
-| Risk Level | Criteria |
+| Tag | Meaning |
 |---|---|
-| **High** | Never used or inactive >180 days **and** has at least one live (non-expired) credential |
-| **Medium** | Never used or inactive >180 days, no live credentials |
-| **Low** | No service principal, SP disabled, or all credentials expired |
-| **Active** | Has sign-in activity within the last 180 days |
-| **Ignore** | App created less than 30 days ago (insufficient data) |
+| `RecentActivity` | Sign-in activity within the `-UnusedDays` window |
+| `UsedAsAPI` | Has delegated resource sign-in activity (another app calls it as an API) |
+| `UsedAsAPIAppOnly` | Has app-only resource sign-in activity |
+| `AppRoleAssignments` | Has one or more app role assignments |
+| `OAuthClientGrants` | Has OAuth2 permission grants as client |
+| `OAuthResourceGrants` | Has OAuth2 permission grants as resource |
+| `CredentialsPresent` | App registration has active secrets or certificates |
 
 ## Notes
 
-- Sign-in data requires Entra diagnostic logs to be routed to a Log Analytics workspace. At minimum, connect `SigninLogs` and `AADServicePrincipalSignInLogs`.
-- The Entra audit log API retains non-interactive sign-ins for up to **180 days**. `LastNonInteractiveSignIn` is therefore based on a 180-day window.
-- If no data at all is found in Log Analytics for a given app, the SP `signInActivity` field from Graph is used as a final fallback.
-- The 180-day window is baked into the KQL query and can be adjusted there.
+- Sign-in activity data is sourced from the Graph beta endpoint `servicePrincipalSignInActivities`, which retains data for up to **30 days** for most tenants (P1/P2 licence required).
+- The script pages through **all** service principals and activity records — there is no cap on result counts.
 - The script is **read-only** — it makes no changes to your tenant.
 
 ## License
