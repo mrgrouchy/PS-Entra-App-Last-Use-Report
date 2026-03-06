@@ -149,11 +149,11 @@ These are independent of `RiskLevel` — an app can be `Medium` risk but still h
 
 | Signal | Meaning |
 |---|---|
-| `UsedAsAPI` | Has delegated resource sign-in activity (another app calls it as an API) |
-| `UsedAsAPIAppOnly` | Has app-only resource sign-in activity |
-| `AppRoleAssignments` | Has one or more app role assignments |
-| `OAuthClientGrants` | Has OAuth2 permission grants as client |
-| `OAuthResourceGrants` | Has OAuth2 permission grants as resource |
+| `UsedAsAPI` | `DelegatedResourceUtc` is non-null — another app has called this app's API on behalf of a signed-in user. This app is acting as a resource server in a delegated flow. Disabling it would break the calling app for all affected users. |
+| `UsedAsAPIAppOnly` | `AppAuthResourceUtc` is non-null — another app has authenticated to this app's API using its own identity (client credentials / app-only). This is a service-to-service dependency with no user involved. Disabling it would silently break background jobs or automation pipelines that depend on this app. |
+| `AppRoleAssignments` | One or more principals (users, groups, or other service principals) have been granted an app role defined by this SP (`appRoleAssignedTo`). These grants are structural — they exist in the directory regardless of whether any sign-in has occurred — and imply that other apps or access policies are built around this app's role definitions. |
+| `OAuthClientGrants` | This SP has been granted delegated OAuth2 permissions to call other APIs on behalf of users (`oauth2PermissionGrants` where `clientId` = this SP). The grants themselves don't confirm active use, but removing the SP would revoke its ability to act on behalf of users and could break flows that rely on those consented scopes. |
+| `OAuthResourceGrants` | Other SPs have been granted delegated OAuth2 permissions to call **this** app's API on behalf of users (`oauth2PermissionGrants` where `resourceId` = this SP). This app is the resource/API being consented to. Disabling it would break every client app that holds one of these grants. |
 
 ---
 
