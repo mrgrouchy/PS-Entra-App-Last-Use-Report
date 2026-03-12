@@ -23,8 +23,9 @@ Backs up top-level `.json` files in a directory into a `Json_Backup` folder befo
 - Checks app role assignments and OAuth delegated grants
 - Checks synchronization jobs to catch provisioning-based enterprise apps
 - Checks federated identity credentials on tenant-owned app registrations
-- Separates tenant-owned and non-tenant-owned service principals
-- Produces a conservative `CandidateForDisableReview` flag instead of a direct disable recommendation
+- Sub-classifies non-tenant-owned service principals into `MicrosoftFirstParty` and `ConsentedExternalApp`
+- Exempts Microsoft infrastructure SPs from cleanup workflows automatically
+- Produces a conservative `CandidateForDisableReview` flag and a staged `RecommendedAction` instead of a direct disable recommendation
 
 ### Prerequisites
 
@@ -111,6 +112,8 @@ Behavior:
 | `ServicePrincipalId` | Service principal object ID |
 | `ServicePrincipalType` | Graph service principal type |
 | `OwnershipClass` | `TenantOwned` when a local app registration exists, otherwise `NonTenantOwned` |
+| `SpSubClass` | `TenantOwned`, `MicrosoftFirstParty`, or `ConsentedExternalApp` — see below |
+| `PublisherName` | Publisher name from the service principal object |
 | `AccountEnabled` | Combined effective enabled state |
 | `ServicePrincipalActivation` | Service principal enabled state only |
 | `CreatedDaysAgo` | Age of the backing app registration |
@@ -138,9 +141,20 @@ Behavior:
 | `HasLiveCredentials` | Whether any non-expired secret or cert exists |
 | `FederatedCredentialCount` | Count of federated identity credentials on the app registration |
 | `FederatedCredentialCheckStatus` | `Ok`, `NotApplicable`, or `Unavailable` |
-| `RiskLevel` | `Active`, `High`, `Medium`, `Low`, `Ignore`, or `Review` |
-| `CandidateForDisableReview` | Conservative review signal for tenant-owned, inactive apps with no detected dependency signals |
+| `RiskLevel` | `Active`, `High`, `Medium`, `Low`, `Ignore`, `Review`, or `Exempt` — see below |
+| `CandidateForDisableReview` | Conservative review signal for tenant-owned or consented-external inactive apps with no detected dependency signals |
+| `RecommendedAction` | Staged action guidance — see below |
 | `DependencySignals` | Semicolon-separated dependency or caution markers |
+
+### SP Sub-Classification
+
+`SpSubClass` refines `OwnershipClass` for non-tenant-owned service principals:
+
+| SpSubClass | Meaning |
+|---|---|
+| `TenantOwned` | Has a local app registration in this tenant |
+| `MicrosoftFirstParty` | No local app reg; publisher matches Microsoft Services, Microsoft Corporation, Windows Azure, or Microsoft Azure |
+| `ConsentedExternalApp` | No local app reg; publisher is non-Microsoft or absent — a consented ISV or external app |
 
 ### Risk Classification
 
@@ -151,7 +165,21 @@ Behavior:
 | `Medium` | Inactive with no live secrets or certificates detected |
 | `Low` | Disabled, or credentials are fully expired |
 | `Ignore` | App registration is newer than 30 days |
-| `Review` | Non-tenant-owned service principal; keep out of normal cleanup flow |
+| `Review` | `ConsentedExternalApp` — keep separate from tenant-owned cleanup flow |
+| `Exempt` | `MicrosoftFirstParty` — Microsoft infrastructure; never process through a disable workflow |
+
+### Recommended Action
+
+| RecommendedAction | Meaning |
+|---|---|
+| `Exempt` | Microsoft infrastructure SP — do not take any action |
+| `NoAction` | SP is active or too new — no action warranted |
+| `RevokeGrants` | Consented external app with no dependencies — revoke OAuth grants and app role assignments as Stage 1 |
+| `DisableSP` | Tenant-owned SP with no dependencies — disable via `accountEnabled = false` |
+| `ReviewDependencies` | Dependencies detected — manual review required before any action |
+| `Review` | Catch-all for unclassified cases |
+
+For `RevokeGrants`, the recommended sequence is: revoke `oauth2PermissionGrants` → remove `appRoleAssignedTo` entries → disable the SP → optionally delete after an observation window.
 
 ### Dependency Signals
 
@@ -171,7 +199,9 @@ Behavior:
 ### Cleanup Interpretation
 
 - `CandidateForDisableReview = True` means the object is a candidate for human review, not that it is automatically safe to disable or delete.
-- `Review` objects should be handled separately from tenant-owned app cleanup.
+- `Exempt` objects are Microsoft infrastructure. Do not feed them into any disable or delete workflow.
+- `Review` objects (`ConsentedExternalApp`) should be handled separately from tenant-owned app cleanup using the `RevokeGrants` staged sequence.
+- `RecommendedAction` is a starting point for human decision-making, not an automation trigger.
 - Apps with no observed sign-in data can still be live through provisioning, infrequent use, break-glass scenarios, federation, or other out-of-band dependencies.
 
 ## `Tools/Backup-JsonFiles.ps1`

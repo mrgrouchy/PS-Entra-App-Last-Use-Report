@@ -374,7 +374,7 @@ union isfuzzy=true
 # ------------------------------------------------------------
 
 Write-Host "Fetching service principals..." -ForegroundColor Cyan
-$servicePrincipals = Get-AllGraphPages "https://graph.microsoft.com/beta/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,isDisabled&`$top=999"
+$servicePrincipals = Get-AllGraphPages "https://graph.microsoft.com/beta/servicePrincipals?`$select=id,displayName,appId,servicePrincipalType,isDisabled,publisherName&`$top=999"
 Write-Host "  Service principals: $($servicePrincipals.Count)"
 
 $allServicePrincipals = @($servicePrincipals)
@@ -588,6 +588,17 @@ $report = foreach ($sp in $servicePrincipals) {
 
   $ownershipClass = if ($appReg) { 'TenantOwned' } else { 'NonTenantOwned' }
 
+  # Sub-classify NonTenantOwned SPs to distinguish Microsoft infrastructure from consented external apps
+  $publisherName = Get-Prop $sp "publisherName"
+  $msPublishers = @('Microsoft Services', 'Microsoft Corporation', 'Windows Azure', 'Microsoft Azure', 'Microsoft')
+  $spSubClass = if ($ownershipClass -eq 'TenantOwned') {
+    'TenantOwned'
+  } elseif ($publisherName -and ($msPublishers | Where-Object { $publisherName -like "*$_*" })) {
+    'MicrosoftFirstParty'
+  } else {
+    'ConsentedExternalApp'
+  }
+
   # Effective enabled state:
   # - If local app registration exists, combine SP activation + appReg disabled state
   # - If no local app registration (e.g., first-party/external SP), use SP activation only
@@ -608,7 +619,9 @@ $report = foreach ($sp in $servicePrincipals) {
   # --- Risk level (activity + credential liveness) ---
   $tooNew = $null -ne $createdDaysAgo -and $createdDaysAgo -lt 30
 
-  $riskLevel = if ($ownershipClass -eq 'NonTenantOwned') {
+  $riskLevel = if ($spSubClass -eq 'MicrosoftFirstParty') {
+    "Exempt"
+  } elseif ($spSubClass -eq 'ConsentedExternalApp') {
     "Review"
   } elseif ($tooNew) {
     "Ignore"
@@ -640,10 +653,37 @@ $report = foreach ($sp in $servicePrincipals) {
 
   # CandidateForDisableReview is intentionally conservative. It is a review signal, not a delete recommendation.
   $candidateForDisableReview = (
-    $ownershipClass -eq 'TenantOwned' -and
-    $riskLevel -in @("Low", "Medium") -and
-    $depReasons.Count -eq 0
+    (
+      $spSubClass -eq 'TenantOwned' -and
+      $riskLevel -in @("Low", "Medium") -and
+      $depReasons.Count -eq 0
+    ) -or (
+      $spSubClass -eq 'ConsentedExternalApp' -and
+      $depReasons.Count -eq 0 -and
+      $riskLevel -notin @("Active", "Exempt", "Ignore")
+    )
   )
+
+  # RecommendedAction: staged guidance per sub-class and dependency state
+  $recommendedAction = if ($spSubClass -eq 'MicrosoftFirstParty') {
+    'Exempt'
+  } elseif ($riskLevel -in @("Active", "Ignore")) {
+    'NoAction'
+  } elseif ($spSubClass -eq 'ConsentedExternalApp') {
+    if ($depReasons | Where-Object { $_ -notin @('NonTenantOwned') }) {
+      'ReviewDependencies'
+    } else {
+      'RevokeGrants'
+    }
+  } elseif ($spSubClass -eq 'TenantOwned') {
+    if ($depReasons.Count -eq 0) {
+      'DisableSP'
+    } else {
+      'ReviewDependencies'
+    }
+  } else {
+    'Review'
+  }
 
   [pscustomobject]@{
     DisplayName              = $spName
@@ -652,6 +692,8 @@ $report = foreach ($sp in $servicePrincipals) {
     ServicePrincipalId       = $spId
     ServicePrincipalType     = $spType
     OwnershipClass           = $ownershipClass
+    SpSubClass               = $spSubClass
+    PublisherName            = $publisherName
     AccountEnabled           = $effectiveAccountEnabled
     ServicePrincipalActivation = $servicePrincipalActivation
     CreatedDaysAgo           = $createdDaysAgo
@@ -685,6 +727,7 @@ $report = foreach ($sp in $servicePrincipals) {
 
     RiskLevel                = $riskLevel
     CandidateForDisableReview = $candidateForDisableReview
+    RecommendedAction        = $recommendedAction
     DependencySignals        = ($depReasons -join ";")
   }
 }
