@@ -8,7 +8,7 @@ PowerShell scripts for auditing Entra ID / Azure AD service principal and app re
 
 ### `Get-AppUsageReport.ps1` — Recommended
 
-The primary, merged script. Combines **Graph SP sign-in activity (180d)** with optional **Log Analytics user and workload sign-ins** for the widest possible activity picture. No LA workspace required to run.
+Combines **Graph SP sign-in activity (180d)** with optional **Log Analytics user and workload sign-ins** for the widest possible activity picture. No LA workspace required to run.
 
 ---
 
