@@ -8,10 +8,6 @@ PowerShell scripts for auditing Entra ID service principals and app registration
 
 Builds a tenant-wide or targeted report that combines sign-in activity, credential state, ownership classification, and structural dependency checks. The output is intended to identify candidates for manual disable review, not automatic deletion.
 
-### `Tools/Match_Id_to_displayname.ps1`
-
-Validates an input CSV by confirming that a `DisplayName` matches either an app registration `AppId` or a service principal `ServicePrincipalId`, and reports successful matches to the console.
-
 ### `Tools/Backup-JsonFiles.ps1`
 
 Backs up top-level `.json` files in a directory into a `Json_Backup` folder before bulk changes.
@@ -177,27 +173,6 @@ Behavior:
 - `CandidateForDisableReview = True` means the object is a candidate for human review, not that it is automatically safe to disable or delete.
 - `Review` objects should be handled separately from tenant-owned app cleanup.
 - Apps with no observed sign-in data can still be live through provisioning, infrequent use, break-glass scenarios, federation, or other out-of-band dependencies.
-
-## `Tools/Match_Id_to_displayname.ps1`
-
-### Usage
-
-```powershell
-.\Tools\Match_Id_to_displayname.ps1 -CsvPath .\input.csv
-```
-
-Accepted CSV columns:
-
-- `DisplayName` or `Displayname`
-- App registration identifiers: `AppId`, `ApplicationId`, `ClientId`
-- Service principal identifiers: `ServicePrincipalId`, `ServicePrincipalObjectId`, `ObjectId`, `Id`
-
-Behavior:
-
-- Each row must contain `DisplayName` and exactly one identifier type.
-- App IDs are checked against app registrations.
-- Service principal IDs are checked against service principals.
-- Confirmed matches are printed to screen and summarized at the end.
 
 ## `Tools/Backup-JsonFiles.ps1`
 
