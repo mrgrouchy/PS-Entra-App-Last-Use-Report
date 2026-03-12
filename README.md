@@ -1,4 +1,4 @@
-﻿# PS-Last_app_signin
+﻿# PS-Entra-App-Last-Use-Report
 
 PowerShell scripts for auditing Entra ID / Azure AD service principal and app registration activity, to identify unused apps that are safe to disable.
 
