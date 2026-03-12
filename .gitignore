@@ -27,4 +27,5 @@ desktop.ini
 .claude
 
 # Json Backups
-.Json_Backup
+Json_Backup/
+*.json
