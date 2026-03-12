@@ -61,7 +61,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # Hardcoded Log Analytics workspace
-$WorkspaceId = "5ee1772f-c4b4-4afa-afda-0239cc35b934"
+$WorkspaceId = ""
 
 # ------------------------------------------------------------
 # Load input CSV filter (if provided)
