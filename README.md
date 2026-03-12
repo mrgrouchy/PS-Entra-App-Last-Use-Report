@@ -10,14 +10,6 @@ PowerShell scripts for auditing Entra ID / Azure AD service principal and app re
 
 The primary, merged script. Combines **Graph SP sign-in activity (180d)** with optional **Log Analytics user sign-ins** for the widest possible activity picture. No LA workspace required to run.
 
-### `Get-App_last_used.ps1` — Graph only
-
-Lightweight Graph-only script focused on service principal activity and dependency signals. Useful for a quick run without any Azure prerequisites.
-
-### `last_signin.ps1` — Log Analytics only
-
-Original script. Requires a Log Analytics workspace with Entra sign-in tables connected. Reports on app registrations rather than service principals.
-
 ---
 
 ## Get-AppUsageReport.ps1
@@ -305,27 +297,6 @@ These are independent of `RiskLevel` — an app can be `Medium` risk but still h
    ```
    DELETE /v1.0/oauth2PermissionGrants/{id}
    ```
-
----
-
-## Get-App_last_used.ps1
-
-Graph-only, no Azure prerequisites. Iterates all service principals, checks Graph SP activity, dependency signals, and whether the app registration has credentials. Outputs `SafeToDisable` and `WhyNotSafe` tags.
-
-```powershell
-.\Get-App_last_used.ps1 [-UnusedDays 180] [-IncludeNeverUsed] [-OutCsv .\report.csv]
-```
-
----
-
-## last_signin.ps1
-
-Requires a Log Analytics workspace with `SigninLogs` and `AADServicePrincipalSignInLogs` connected. Reports on **app registrations** (not service principals). Useful if you want to cross-reference with interactive user sign-in volume.
-
-```powershell
-# Set WorkspaceId at the top of the script, then:
-.\last_signin.ps1
-```
 
 ---
 
