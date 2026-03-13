@@ -2,6 +2,10 @@
 
 PowerShell scripts for auditing Entra ID service principals and app registrations for inactivity, ownership, and dependency signals during application cleanup reviews.
 
+## Read-Only — No Automated Actions
+
+This toolset is **tenant read-only**. It issues only `GET` requests against Microsoft Graph and read-only Log Analytics queries. It does not call any write, patch, delete, or revoke endpoints. No tenant object is modified, disabled, or deleted by running these scripts. Every action column in the output (`RecommendedAction`, `CandidateForDisableReview`) is a signal for human decision-making — it is never executed automatically.
+
 ## Scripts
 
 ### `Get-AppUsageReport.ps1`
@@ -179,7 +183,14 @@ Behavior:
 | `ReviewDependencies` | Dependencies detected — manual review required before any action |
 | `Review` | Catch-all for unclassified cases |
 
-For `RevokeGrants`, the recommended sequence is: revoke `oauth2PermissionGrants` → remove `appRoleAssignedTo` entries → disable the SP → optionally delete after an observation window.
+For `RevokeGrants` (`ConsentedExternalApp` with no dependencies), the recommended staged sequence is:
+
+1. **Revoke delegated grants** — remove all `oauth2PermissionGrants` where `clientId` equals the SP object ID
+2. **Remove app role assignments** — remove all `appRoleAssignedTo` entries on the SP
+3. **Disable the SP** — set `accountEnabled = false` on the service principal object
+4. **Delete after observation window** — confirm no service impact, then delete the SP after a suitable hold period (recommended: 30–90 days)
+
+For `DisableSP` (`TenantOwned` with no dependencies), skip steps 1–2 and begin at step 3, then proceed to step 4.
 
 ### Dependency Signals
 
@@ -195,6 +206,20 @@ For `RevokeGrants`, the recommended sequence is: revoke `oauth2PermissionGrants`
 | `FederatedCredentials` | Federated identity credentials exist on the app registration |
 | `FederatedCredentialCheckUnavailable` | Federated credential check could not be completed |
 | `NonTenantOwned` | No local app registration was found for the service principal |
+
+### Architectural Decision — Microsoft First-Party SPs
+
+Microsoft First-Party SPs (`SpSubClass = MicrosoftFirstParty`) are service principals provisioned directly by Microsoft into every tenant to support platform infrastructure — identity extensions, Office 365 workloads, Azure RBAC backends, and similar services. They are identified by publisher name matching `Microsoft Services`, `Microsoft Corporation`, `Windows Azure`, `Microsoft Azure`, or `Microsoft`.
+
+**Decision: First-party SPs must never be fed into any disable, revoke, or delete workflow, regardless of observed activity.**
+
+Rationale:
+
+- Zero sign-in activity in the reporting window is **expected and normal** for many first-party SPs. Absence of sign-in telemetry does not mean the SP is unused — many are invoked out-of-band by platform operations not surfaced in `servicePrincipalSignInActivities`.
+- Microsoft re-provisions removed first-party SPs automatically. Disabling or deleting them can break tenant services before re-provisioning completes, creating an incident window with no net reduction in attack surface.
+- These SPs are not owned by the tenant. The tenant cannot control their lifecycle beyond consent scope — the correct action for unwanted permissions is consent revocation, not SP disablement.
+
+The script enforces this by assigning `RiskLevel = Exempt`, `RecommendedAction = Exempt`, and excluding all `MicrosoftFirstParty` SPs from `CandidateForDisableReview`. Filter on `SpSubClass != MicrosoftFirstParty` before passing output to any remediation pipeline.
 
 ### Cleanup Interpretation
 
