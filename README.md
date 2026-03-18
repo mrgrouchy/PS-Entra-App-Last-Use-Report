@@ -18,6 +18,7 @@ Builds a tenant-wide or targeted report that combines sign-in activity, credenti
 
 - Fetches service principal sign-in activity from Graph `beta/reports/servicePrincipalSignInActivities`
 - Optionally queries Log Analytics for interactive user, service principal, and managed identity sign-ins
+  (authoritative source when 90-day retention is required)
 - Loads all service principals and app registrations in bulk
 - Supports input CSV scoping by service principal object ID, app ID, or app registration object ID fallback
 - Checks app role assignments and OAuth delegated grants
@@ -70,7 +71,7 @@ Install-Module Az.OperationalInsights -Scope CurrentUser
 |---|---|---|
 | `-UnusedDays` | `180` | Days of inactivity before an app is treated as inactive |
 | `-WorkspaceId` | empty | Optional Log Analytics workspace ID |
-| `-LookbackDays` | `90` | Log Analytics query window |
+| `-LookbackDays` | `90` | Log Analytics query window (use within your workspace retention period) |
 | `-Top` | `0` | Limit the number of service principals processed after filtering |
 | `-IncludeNeverUsed` | off | Keep rows with no recorded activity in the final report |
 | `-OutCsv` | empty | Export path for the CSV report |
@@ -101,6 +102,8 @@ Behavior:
 | Log Analytics `AADManagedIdentitySignInLogs` | Managed identity sign-ins |
 
 `TrueLastActivity` is the most recent timestamp across all available activity vectors.
+
+For this workflow, Log Analytics is the authoritative source for interactive sign-in history when you need a 90-day window. Graph activity endpoints remain useful, but do not replace this retention requirement.
 
 ### Output Columns
 
@@ -227,7 +230,8 @@ The script enforces this by assigning `RiskLevel = Exempt`, `RecommendedAction =
 
 ## Notes
 
-- Graph `servicePrincipalSignInActivities` is still the main non-LA signal for service principal activity.
+- Graph `servicePrincipalSignInActivities` remains the main non-LA signal for service principal activity.
+- Log Analytics remains authoritative in this scenario when a 90-day retention window is required.
 
 ## License
 
