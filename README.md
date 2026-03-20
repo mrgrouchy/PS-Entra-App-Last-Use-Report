@@ -49,6 +49,25 @@ Install-Module Az.OperationalInsights -Scope CurrentUser
   - synchronization jobs
   - federated identity credentials
 
+### Sanitized Configuration Note
+
+This repository is intentionally sanitized. Authentication values are redacted and are not meant to be committed or shared:
+
+- `$TenantId`
+- `$ClientId`
+- `$Thumbprint`
+
+In your private/prod environment, supply those values locally before running the script (without storing secrets in source control). They are used by `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...`.
+
+The script also currently resets `$WorkspaceId` to an empty string after `param(...)`:
+
+```powershell
+# Hardcoded Log Analytics workspace
+$WorkspaceId = ""
+```
+
+That means a `-WorkspaceId` value passed at runtime is overwritten unless you remove or change that line.
+
 ### Usage
 
 ```powershell
@@ -70,7 +89,7 @@ Install-Module Az.OperationalInsights -Scope CurrentUser
 | Parameter | Default | Description |
 |---|---|---|
 | `-UnusedDays` | `180` | Days of inactivity before an app is treated as inactive |
-| `-WorkspaceId` | empty | Optional Log Analytics workspace ID |
+| `-WorkspaceId` | empty | Optional Log Analytics workspace ID (currently overwritten to empty by an in-script assignment unless you edit the script) |
 | `-LookbackDays` | `90` | Log Analytics query window (use within your workspace retention period) |
 | `-Top` | `0` | Limit the number of service principals processed after filtering |
 | `-IncludeNeverUsed` | off | Keep rows with no recorded activity in the final report |

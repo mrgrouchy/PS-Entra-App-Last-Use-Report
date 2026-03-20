@@ -158,8 +158,6 @@ Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $
 $useLA = ($WorkspaceId -ne "")
 
 if ($useLA) {
-  # Keep LA as the activity source for this scenario: it preserves the 90-day lookback,
-  # while Graph-only sign-in/activity endpoints do not provide equivalent retention here.
   Write-Host "Log Analytics configured — will query interactive user + workload sign-in data ($LookbackDays days)." -ForegroundColor Cyan
   Connect-AzAccount | Out-Null
 }
