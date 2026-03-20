@@ -1,24 +1,35 @@
 <#
 .SYNOPSIS
-  Audits Entra ID service principals for inactivity and structural dependencies.
+  Builds an app-usage and dependency report for Entra ID service principals.
 
 .DESCRIPTION
-  Combines Graph SP sign-in activity (180d) with optional Log Analytics sign-in
-  data from interactive users, service principals, and managed identities to
-  produce the widest possible activity picture per app. Outputs a
-  risk-classified report.
+  Collects service principal activity and dependency signals, then outputs a
+  risk-classified report for cleanup review workflows. Data sources include
+  Graph servicePrincipalSignInActivities and, when configured, Log Analytics
+  sign-in tables (SigninLogs, AADServicePrincipalSignInLogs,
+  AADManagedIdentitySignInLogs).
+  
+  Note: this repository is sanitized for sharing. Authentication and workspace
+  values are redacted and should be supplied in your private environment.
 
 .PARAMETER UnusedDays
   Days of inactivity before an app is considered unused. Default: 180.
 
 .PARAMETER WorkspaceId
-  Log Analytics workspace ID. When supplied, also queries SigninLogs,
+  Log Analytics workspace ID.
+  When enabled in your local/private copy, queries SigninLogs,
   AADServicePrincipalSignInLogs, and AADManagedIdentitySignInLogs
-  (isfuzzy=true — missing tables are skipped). Omit to run Graph-only.
+  (isfuzzy=true, missing tables skipped). Omit for Graph-only operation.
+  In this sanitized shared script, WorkspaceId is reset in-code unless you
+  customize that section locally.
 
 .PARAMETER LookbackDays
   How far back to query Log Analytics. Should not exceed your workspace
   retention. Default: 90.
+
+.PARAMETER Top
+  Limits the number of service principals processed after filtering.
+  Default: 0 (no limit).
 
 .PARAMETER IncludeNeverUsed
   Include service principals with no recorded sign-in activity at all.
@@ -27,25 +38,33 @@
   Path to export a CSV report. If omitted, no file is written.
 
 .PARAMETER InputCsv
-  Optional path to an input CSV containing Service Principal IDs to filter.
-  The CSV should have a column containing SP IDs (AppId, ServicePrincipalId, or Id).
-  If omitted, all service principals will be queried.
+  Optional path to an input CSV used to scope processing.
+  Supports SP object ID and AppId columns (for example ServicePrincipalObjectId,
+  ServicePrincipalId, SPId, ObjectId, Id, AppId, ApplicationId).
+  If no standard column exists, the first column is treated as a service
+  principal ID.
+  If direct SP matching returns no results, the script also attempts fallback
+  resolution from app registration object IDs to AppId.
 
 .EXAMPLE
   # Graph only — 180d SP activity, no LA required
   .\Get-AppUsageReport.ps1 -OutCsv .\report.csv
 
 .EXAMPLE
-  # Graph + Log Analytics — adds 90d interactive user and workload sign-ins
+  # Graph + Log Analytics (after local private configuration)
   .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -OutCsv .\report.csv
 
 .EXAMPLE
-  # Custom thresholds, include never-used apps
+  # Custom thresholds, include never-used apps (after local private configuration)
   .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -UnusedDays 90 -LookbackDays 90 -IncludeNeverUsed -OutCsv .\report.csv
 
 .EXAMPLE
   # Filter by specific SP IDs from input CSV
   .\Get-AppUsageReport.ps1 -InputCsv .\input.csv -OutCsv .\report.csv
+
+.EXAMPLE
+  # Process only the first 200 filtered service principals
+  .\Get-AppUsageReport.ps1 -Top 200 -OutCsv .\report.csv
 #>
 param(
   [int]$UnusedDays    = 180,
