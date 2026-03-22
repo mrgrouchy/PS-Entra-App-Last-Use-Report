@@ -80,6 +80,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# TODO(AzureAutomation):
+# - Replace certificate-thumbprint auth with a non-interactive Azure Automation approach.
+# - Preferred options:
+#   1. System-assigned or user-assigned managed identity for Graph and Log Analytics
+#   2. Automation account Run As / app registration only if MI is not viable
+# - Add an auth helper that detects local execution vs Azure Automation and chooses the correct connection flow.
+# - Move tenant/app/workspace settings to Automation variables, managed identity context, or environment variables.
+# - Remove the hardcoded/sanitized auth placeholders once the production auth path is implemented.
+#
+# TODO(SQLStorage):
+# - Add a SQL output mode so report rows are persisted to a database instead of or alongside CSV.
+# - Decide whether to:
+#   1. truncate and reload a reporting table per run, or
+#   2. append snapshots with a RunId/RunTimestamp for historical trending.
+# - Add parameters for SQL server/database/table/auth mode.
+# - Normalize report schema and data types before insert.
+# - Implement batched writes and upsert strategy.
+# - Capture run metadata separately (RunId, executed at, thresholds, LA enabled, row count, source script).
+
 # Hardcoded Log Analytics workspace
 $WorkspaceId = ""
 
@@ -163,6 +182,11 @@ else {
 # Graph connection
 # ------------------------------------------------------------
 
+# TODO(AzureAutomation): replace this local certificate-based Graph auth block with a shared auth helper.
+# For Azure Automation, prefer Connect-MgGraph via managed identity if the required Graph app roles are assigned.
+# Example future shape:
+# - local/dev: existing cert or interactive login
+# - automation: Connect-MgGraph -Identity
 $TenantId  = ""
 $ClientId  = ""
 $Thumbprint = ""   # cert must exist in CurrentUser\My or LocalMachine\My
@@ -175,6 +199,9 @@ Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $
 # Az connection (only when WorkspaceId supplied)
 # ------------------------------------------------------------
 
+# TODO(AzureAutomation): align Az auth with the Graph auth strategy.
+# If WorkspaceId / Log Analytics is kept for scheduled runs, prefer Connect-AzAccount -Identity in Azure Automation.
+# Also remove the current WorkspaceId overwrite pattern so runtime configuration can be supplied externally.
 $useLA = ($WorkspaceId -ne "")
 
 if ($useLA) {
@@ -788,6 +815,12 @@ Write-Host ""
   $report | Format-Table DisplayName, OwnershipClass, TrueLastActivity, DaysSinceActivity, RiskLevel, CandidateForDisableReview, DependencySignals -AutoSize
 
 if ($OutCsv) {
+  # TODO(SQLStorage): keep CSV as an optional local/debug output, but add a SQL persistence path here.
+  # Suggested implementation:
+  # - create a RunId at start of script
+  # - project rows into a stable table schema
+  # - bulk insert or batched upsert into dbo.AppUsageReport
+  # - write run metadata into dbo.AppUsageReportRun
   $report | Export-Csv $OutCsv -NoTypeInformation
   Write-Host "CSV exported to $OutCsv" -ForegroundColor Green
 }
