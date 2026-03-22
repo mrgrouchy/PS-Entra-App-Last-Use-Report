@@ -8,9 +8,9 @@ This toolset is **tenant read-only**. It issues only `GET` requests against Micr
 
 ## Scripts
 
-### `Get-AppUsageReport.ps1`
+### `Get-AppUsageReport-Local.ps1`
 
-Builds a local, tenant-wide or targeted report that combines sign-in activity, credential state, ownership classification, and structural dependency checks. The output is intended to identify candidates for manual disable review, not automatic deletion.
+Builds a tenant-wide or targeted report that combines sign-in activity, credential state, ownership classification, and structural dependency checks. The output is intended to identify candidates for manual disable review, not automatic deletion.
 
 ## `Get-AppUsageReport.ps1`
 
@@ -27,6 +27,7 @@ Builds a local, tenant-wide or targeted report that combines sign-in activity, c
 - Sub-classifies non-tenant-owned service principals into `MicrosoftFirstParty` and `ConsentedExternalApp`
 - Exempts Microsoft infrastructure SPs from cleanup workflows automatically
 - Produces a conservative `CandidateForDisableReview` flag and a staged `RecommendedAction` instead of a direct disable recommendation
+- Supports run-state checkpointing and resume for long-running reports
 
 ### Prerequisites
 
@@ -71,18 +72,17 @@ That means a `-WorkspaceId` value passed at runtime is overwritten unless you re
 ### Usage
 
 ```powershell
-# Graph only (IncludeNeverUsed is enabled by default)
+# Graph only
 .\Get-AppUsageReport.ps1 -OutCsv .\report.csv
 
 # Graph + Log Analytics
-.\Get-AppUsageReport.ps1 -WorkspaceId "<guid>" -OutCsv .\report.csv
+.\Get-AppUsageReport-Local.ps1 -WorkspaceId "<guid>" -OutCsv .\report.csv
 
-# Exclude objects with no observed activity
-.\Get-AppUsageReport.ps1 -IncludeNeverUsed:$false -OutCsv .\report.csv
+# Include objects with no observed activity
+.\Get-AppUsageReport.ps1 -IncludeNeverUsed -OutCsv .\report.csv
 
 # Restrict to a target list
 .\Get-AppUsageReport.ps1 -InputCsv .\targets.csv -OutCsv .\report.csv
-
 ```
 
 ### Parameters
@@ -96,6 +96,9 @@ That means a `-WorkspaceId` value passed at runtime is overwritten unless you re
 | `-IncludeNeverUsed` | on | Keep rows with no recorded activity in the final report (`-IncludeNeverUsed:$false` to exclude) |
 | `-OutCsv` | empty | Export path for the CSV report |
 | `-InputCsv` | empty | Optional CSV used to scope the run |
+| `-RunStatePath` | empty | Optional checkpoint JSON path used to resume interrupted runs |
+| `-NoResume` | off | Ignore existing checkpoint data and start a fresh run |
+| `-KeepRunState` | off | Keep checkpoint file after successful completion (default behavior removes it) |
 
 ### Input CSV Filtering
 
@@ -176,7 +179,7 @@ For this workflow, Log Analytics is the authoritative source for interactive sig
 | SpSubClass | Meaning |
 |---|---|
 | `TenantOwned` | Has a local app registration in this tenant |
-| `MicrosoftFirstParty` | No local app reg; publisher matches Microsoft Services, Microsoft Corporation, Windows Azure, or Microsoft Azure |
+| `MicrosoftFirstParty` | No local app reg; publisher matches Microsoft Services, Microsoft Corporation, Windows Azure, Microsoft Azure, or Microsoft |
 | `ConsentedExternalApp` | No local app reg; publisher is non-Microsoft or absent — a consented ISV or external app |
 
 ### Risk Classification
@@ -247,6 +250,92 @@ The script enforces this by assigning `RiskLevel = Exempt`, `RecommendedAction =
 - `Review` objects (`ConsentedExternalApp`) should be handled separately from tenant-owned app cleanup using the `RevokeGrants` staged sequence.
 - `RecommendedAction` is a starting point for human decision-making, not an automation trigger.
 - Apps with no observed sign-in data can still be live through provisioning, infrequent use, break-glass scenarios, federation, or other out-of-band dependencies.
+
+## `Export-DisabledEntraApplicationsArchive.ps1`
+
+### What It Does
+
+- Fetches tenant-owned app registrations and related service principals
+- Selects applications where the app registration is disabled
+- Optionally also selects applications where one or more related service principals are disabled
+- Exports one full-fidelity JSON archive per application
+- Captures related application and service principal objects plus key relationship data
+- Writes `manifest.csv` and `manifest.json` in the archive root for quick indexing
+
+### Why JSON + Manifest
+
+Disabled application data is deeply nested, so CSV alone is not a safe archive format. This script uses:
+
+- per-app JSON as the authoritative archive format
+- manifest CSV for spreadsheet-friendly inventory and filtering
+- manifest JSON for machine-friendly indexing
+
+This preserves the raw Graph shape needed later for review or reconstruction while keeping the archive easy to browse.
+
+### Prerequisites
+
+- PowerShell 5.1+ or PowerShell 7+
+- Module:
+
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+```
+
+- Graph access sufficient to read:
+  - applications
+  - service principals
+  - owners
+  - app role assignments
+  - OAuth permission grants
+  - synchronization jobs
+  - federated identity credentials
+
+### Usage
+
+```powershell
+# Archive apps disabled at the app registration level
+.\Export-DisabledEntraApplicationsArchive.ps1
+
+# Archive into a custom folder
+.\Export-DisabledEntraApplicationsArchive.ps1 -OutDir .\archives\2026-03-22
+
+# Also include apps where a related service principal is disabled
+.\Export-DisabledEntraApplicationsArchive.ps1 -IncludeServicePrincipalDisabled
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-OutDir` | `.\disabled-app-archive` | Output directory for the archive |
+| `-IncludeServicePrincipalDisabled` | off | Also include apps whose app registration is enabled but a related service principal is disabled |
+
+### Output Structure
+
+```text
+disabled-app-archive/
+  manifest.csv
+  manifest.json
+  <DisplayName>__<AppId>/
+    archive.json
+```
+
+Each `archive.json` includes:
+
+- export metadata and archive notes
+- application summary and full application object
+- application owners
+- federated identity credentials
+- one entry per related service principal with:
+  - full service principal object
+  - owners
+  - app role assignments
+  - delegated grants
+  - synchronization jobs
+
+### Important Limitation
+
+Microsoft Graph does not expose existing client secret values or certificate private keys for recovery. The archive preserves credential metadata only, so a future recreation workflow would still need new secrets or certificates to be provisioned.
 
 ## Notes
 

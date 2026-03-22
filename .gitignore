@@ -29,3 +29,7 @@ desktop.ini
 # Json Backups
 Json_Backup/
 *.json
+
+# disabled app archives
+disabled-app-archive/
+
