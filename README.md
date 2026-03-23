@@ -78,26 +78,31 @@ This is the local/resumable variant of the same report. It adds checkpoint-based
 Extra behavior compared with `Get-AppUsageReport.ps1`:
 
 - writes a run-state JSON file while processing
+- if `-OutCsv` is omitted, writes `.\Get-AppUsageReport-<yyyy-MM-dd>.csv`
+- on same-day reruns, prompts to reuse or delete the existing checkpoint (default behavior)
+- automatically deletes prior-day checkpoints and starts a fresh iteration
 - resumes when the same scope and key parameters are detected
 - supports explicit checkpoint path control
-- can keep or remove the checkpoint after success
+- supports non-interactive same-day action selection (`Prompt`, `Reuse`, `Delete`)
 
 Typical usage:
 
 ```powershell
+.\Get-AppUsageReport-Local.ps1
 .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv
 .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -RunStatePath .\report.runstate.json
 .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -NoResume
-.\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -KeepRunState
+.\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -SameDayRunStateAction Reuse
 ```
 
 Additional parameters:
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `-RunStatePath` | derived automatically | Checkpoint JSON path |
+| `-RunStatePath` | derived automatically | Checkpoint JSON path; when `-OutCsv` is set it defaults to the same folder and base name (for example `report.csv` -> `report.runstate.json`) |
 | `-NoResume` | off | Ignore existing checkpoint |
-| `-KeepRunState` | off | Keep checkpoint after success |
+| `-SameDayRunStateAction` | `Prompt` | Same-day checkpoint behavior: `Prompt`, `Reuse`, or `Delete` |
+| `-KeepRunState` | off | Deprecated compatibility switch (no longer required) |
 
 ### `Export-DisabledEntraApplicationsArchive.ps1`
 

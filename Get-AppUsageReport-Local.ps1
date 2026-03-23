@@ -41,7 +41,8 @@
   Default: enabled. Use -IncludeNeverUsed:$false to exclude never-used apps.
 
 .PARAMETER OutCsv
-  Path to export a CSV report. If omitted, no file is written.
+  Path to export a CSV report.
+  If omitted, defaults to ".\Get-AppUsageReport-<yyyy-MM-dd>.csv".
 
 .PARAMETER InputCsv
   Optional path to an input CSV used to scope processing.
@@ -55,19 +56,26 @@
 .PARAMETER RunStatePath
   Optional path to a checkpoint JSON file used for resume-on-failure behavior.
   If omitted, defaults to:
-  - "<OutCsvFileName>.runstate.json" in the current directory when OutCsv is set
+  - "<OutCsvDirectory>\<OutCsvBaseName>.runstate.json" when OutCsv is set
   - "Get-AppUsageReport.runstate.json" in the current directory otherwise
 
 .PARAMETER NoResume
   Disables loading an existing run-state file. Processing starts fresh.
 
 .PARAMETER KeepRunState
-  Keeps the run-state file after successful completion. By default, the
-  run-state file is removed when the run completes successfully.
+  Deprecated compatibility switch. Run-state is retained for same-day reruns
+  and rotated automatically when a new local day starts.
+
+.PARAMETER SameDayRunStateAction
+  Behavior when a run-state file from the same local day is found:
+  - Prompt (default): ask whether to reuse or delete it
+  - Reuse: automatically reuse it when fingerprint matches
+  - Delete: automatically remove it and start fresh
+  Run-state files from previous days are automatically removed.
 
 .EXAMPLE
-  # Graph only — 180d SP activity, no LA required
-  .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv
+  # Graph only — uses dated default CSV name in current directory
+  .\Get-AppUsageReport-Local.ps1
 
 .EXAMPLE
   # Graph + Log Analytics (after local private configuration / script customization)
@@ -94,8 +102,8 @@
   .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -NoResume
 
 .EXAMPLE
-  # Keep checkpoint after a successful run (for audit/troubleshooting)
-  .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -KeepRunState
+  # Non-interactive same-day handling
+  .\Get-AppUsageReport-Local.ps1 -OutCsv .\report.csv -SameDayRunStateAction Reuse
 #>
 param(
   [int]$UnusedDays    = 180,
@@ -107,11 +115,17 @@ param(
   [string]$InputCsv   = "",
   [string]$RunStatePath = "",
   [switch]$NoResume,
-  [switch]$KeepRunState
+  [switch]$KeepRunState,
+  [ValidateSet('Prompt','Reuse','Delete')]
+  [string]$SameDayRunStateAction = 'Prompt'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($KeepRunState) {
+  Write-Warning "-KeepRunState is deprecated and no longer required; run-state is retained for same-day reruns automatically."
+}
 
 # Hardcoded Log Analytics workspace
 $WorkspaceId = ""
@@ -423,6 +437,7 @@ function Save-RunCheckpoint {
   $state = [pscustomobject]@{
     Version                = 1
     SavedAtUtc             = (Get-Date).ToUniversalTime().ToString("o")
+    SavedOnLocalDate       = (Get-Date).ToString("yyyy-MM-dd")
     Fingerprint            = $Fingerprint
     TotalServicePrincipals = $Total
     ProcessedServicePrincipalIds = @($ProcessedMap.Keys | Sort-Object)
@@ -583,13 +598,22 @@ if ($hasInputFilter -and $servicePrincipals.Count -eq 0 -and ($filterSpObjectIds
 $now    = Get-Date
 $nowUtc = $now.ToUniversalTime()
 
-$defaultStateName = if ($OutCsv) {
-  "{0}.runstate.json" -f [System.IO.Path]::GetFileName($OutCsv)
-} else {
-  "Get-AppUsageReport.runstate.json"
+if ([string]::IsNullOrWhiteSpace($OutCsv)) {
+  $defaultCsvName = "Get-AppUsageReport-{0}.csv" -f $now.ToString("yyyy-MM-dd")
+  $OutCsv = Join-Path -Path $PWD -ChildPath $defaultCsvName
+  Write-Host "No -OutCsv supplied. Using dated default output: $OutCsv" -ForegroundColor DarkGray
 }
+
+$defaultStateName = "Get-AppUsageReport.runstate.json"
 if ([string]::IsNullOrWhiteSpace($RunStatePath)) {
-  $RunStatePath = Join-Path -Path $PWD -ChildPath $defaultStateName
+  if ($OutCsv) {
+    $outCsvFullPath = [System.IO.Path]::GetFullPath($OutCsv)
+    $outCsvDir = [System.IO.Path]::GetDirectoryName($outCsvFullPath)
+    $outCsvBaseName = [System.IO.Path]::GetFileNameWithoutExtension($outCsvFullPath)
+    $RunStatePath = Join-Path -Path $outCsvDir -ChildPath ("{0}.runstate.json" -f $outCsvBaseName)
+  } else {
+    $RunStatePath = Join-Path -Path $PWD -ChildPath $defaultStateName
+  }
 }
 
 $runFingerprint = Get-RunFingerprint -ServicePrincipals @($servicePrincipals) -UnusedDays $UnusedDays -LookbackDays $LookbackDays -Top $Top -IncludeNeverUsed ([bool]$IncludeNeverUsed) -UseLA ([bool]$useLA)
@@ -599,15 +623,52 @@ $reportRows = @()
 if (-not $NoResume -and (Test-Path -LiteralPath $RunStatePath)) {
   try {
     $existingState = Get-Content -LiteralPath $RunStatePath -Raw | ConvertFrom-Json
-    if ($existingState -and $existingState.Fingerprint -eq $runFingerprint) {
-      foreach ($id in @($existingState.ProcessedServicePrincipalIds)) {
-        if ($id) { $processedIds[[string]$id] = $true }
+    $todayLocal = (Get-Date).ToString("yyyy-MM-dd")
+    $stateLocalDate = $null
+
+    if ($existingState -and $existingState.SavedOnLocalDate) {
+      $stateLocalDate = [string]$existingState.SavedOnLocalDate
+    } elseif ($existingState -and $existingState.SavedAtUtc) {
+      try {
+        $stateLocalDate = ([datetime]$existingState.SavedAtUtc).ToLocalTime().ToString("yyyy-MM-dd")
       }
-      $reportRows = @($existingState.ReportRows)
-      Write-Host "Resuming from run-state: $RunStatePath ($($processedIds.Count)/$($servicePrincipals.Count) already processed)" -ForegroundColor Yellow
+      catch {
+        $stateLocalDate = $null
+      }
+    }
+
+    if ($stateLocalDate -and $stateLocalDate -ne $todayLocal) {
+      Remove-Item -LiteralPath $RunStatePath -Force -ErrorAction SilentlyContinue
+      Write-Host "Run-state is from $stateLocalDate (today: $todayLocal). Removed old checkpoint and starting fresh." -ForegroundColor Yellow
     }
     else {
-      Write-Warning "Existing run-state file does not match current scope/parameters. Starting a fresh run."
+      $reuseSameDay = $true
+      if ($SameDayRunStateAction -eq 'Delete') {
+        $reuseSameDay = $false
+      }
+      elseif ($SameDayRunStateAction -eq 'Prompt') {
+        $answer = Read-Host "Same-day run-state found at '$RunStatePath'. Reuse it? (R)euse/(D)elete [R]"
+        if ($answer -and $answer.Trim().ToUpperInvariant().StartsWith("D")) {
+          $reuseSameDay = $false
+        }
+      }
+
+      if ($reuseSameDay) {
+        if ($existingState -and $existingState.Fingerprint -eq $runFingerprint) {
+          foreach ($id in @($existingState.ProcessedServicePrincipalIds)) {
+            if ($id) { $processedIds[[string]$id] = $true }
+          }
+          $reportRows = @($existingState.ReportRows)
+          Write-Host "Resuming from run-state: $RunStatePath ($($processedIds.Count)/$($servicePrincipals.Count) already processed)" -ForegroundColor Yellow
+        }
+        else {
+          Write-Warning "Existing run-state file does not match current scope/parameters. Starting a fresh run."
+        }
+      }
+      else {
+        Remove-Item -LiteralPath $RunStatePath -Force -ErrorAction SilentlyContinue
+        Write-Host "Deleted same-day checkpoint. Starting a fresh run." -ForegroundColor Yellow
+      }
     }
   }
   catch {
@@ -899,8 +960,8 @@ foreach ($sp in $servicePrincipals) {
 Write-Progress -Activity "Building report" -Completed
 
 $report = @($reportRows)
-if (-not $KeepRunState -and (Test-Path -LiteralPath $RunStatePath)) {
-  Remove-Item -LiteralPath $RunStatePath -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $RunStatePath) {
+  Write-Host "Run-state retained for same-day reruns: $RunStatePath" -ForegroundColor DarkGray
 }
 
 # ------------------------------------------------------------
