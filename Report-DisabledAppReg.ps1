@@ -14,7 +14,7 @@
 
 .REQUIREMENTS
     Microsoft Graph PowerShell SDK
-    Permissions: Application.ReadWrite.All (as per your example)
+    Permissions: Application.Read.All
 
 .PARAMETER JsonPath
     Path to the JSON tracker file. Default: .\disabled-apps-tracker.json
@@ -336,8 +336,8 @@ union isfuzzy=true
 # Main
 # ============================
 
-# Connect to Graph (your permission scope)
-Connect-MgGraph -Scopes "Application.ReadWrite.All" | Out-Null
+# Connect to Graph (read-only scope)
+Connect-MgGraph -Scopes "Application.Read.All" | Out-Null
 
 # Hardcoded Log Analytics workspace
 $WorkspaceId = ""

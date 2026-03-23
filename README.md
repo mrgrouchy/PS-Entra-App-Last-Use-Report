@@ -64,7 +64,7 @@ Parameters:
 | Parameter | Default | Notes |
 |---|---|---|
 | `-UnusedDays` | `180` | Inactivity threshold |
-| `-WorkspaceId` | empty | Optional in principle, but see note below |
+| `-WorkspaceId` | empty | Present in the script signature, but the sanitized shared script resets it in-code; populate/customize that section in your private copy before LA queries will run |
 | `-LookbackDays` | `90` | Log Analytics lookback window |
 | `-Top` | `0` | Limit after filtering |
 | `-IncludeNeverUsed` | `true` | Use `:$false` to exclude apps with no activity |
@@ -255,7 +255,7 @@ This repository is sanitized. Values such as tenant ID, client ID, certificate t
 Current behavior:
 
 - `Get-AppUsageReport.ps1` and `Get-AppUsageReport-Local.ps1` expect the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
-- `Report-DisabledAppReg.ps1` currently uses interactive `Connect-MgGraph -Scopes "Application.ReadWrite.All"` and its hardcoded `WorkspaceId` is intentionally redacted in the shared repo
+- `Report-DisabledAppReg.ps1` currently uses interactive `Connect-MgGraph -Scopes "Application.Read.All"` and its hardcoded `WorkspaceId` is intentionally redacted in the shared repo
 - `Export-DisabledEntraApplicationsArchive.ps1` first checks `Get-MgContext`; if Graph is already connected it reuses that session, otherwise it falls back to interactive sign-in when no app certificate values are set
 
 There is also an important current quirk in both reporting scripts:
