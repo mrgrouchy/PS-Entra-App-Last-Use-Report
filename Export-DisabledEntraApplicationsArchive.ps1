@@ -88,6 +88,41 @@ function Get-Prop {
   return $null
 }
 
+$script:AuthzNoticeShown = @{}
+
+function Test-IsAuthorizationFailure {
+  param($ErrorRecord)
+
+  if ($null -eq $ErrorRecord) { return $false }
+
+  $statusCode = $null
+  try {
+    if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Response -and $ErrorRecord.Exception.Response.StatusCode) {
+      $statusCode = [int]$ErrorRecord.Exception.Response.StatusCode
+    }
+  }
+  catch {
+    $statusCode = $null
+  }
+
+  if ($statusCode -in @(401, 403)) { return $true }
+
+  $text = [string]$ErrorRecord.Exception.Message
+  return ($text -match '(?i)unauthorized|forbidden|insufficient privileges|authorization_requestdenied')
+}
+
+function Show-AuthzNoticeOnce {
+  param(
+    [string]$Key,
+    [string]$Message
+  )
+
+  if (-not $script:AuthzNoticeShown.ContainsKey($Key)) {
+    $script:AuthzNoticeShown[$Key] = $true
+    Write-Warning $Message
+  }
+}
+
 function ConvertTo-SafeFolderName {
   param([string]$Value)
 
@@ -130,6 +165,11 @@ function Get-GraphCollectionOrEmpty {
     return @(Get-AllGraphPages -Uri $Uri)
   }
   catch {
+    if (($Uri -match '/synchronization/jobs') -and (Test-IsAuthorizationFailure -ErrorRecord $_)) {
+      Show-AuthzNoticeOnce -Key 'syncJobsAuthz' -Message "Skipping synchronization jobs for one or more service principals due to Graph authorization limits (401/403). Archive export will continue without those records."
+      return @()
+    }
+
     Write-Warning "Request failed: $Uri`n$($_.Exception.Message)"
     return @()
   }
