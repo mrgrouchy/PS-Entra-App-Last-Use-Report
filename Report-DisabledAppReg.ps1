@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Tracks Azure AD / Entra applications that are disabled and records the first date/time they were observed disabled.
+    Tracks disabled Entra applications over time and records when they were first observed disabled.
 
 .DESCRIPTION
     Creates/updates a JSON file in the working directory:
@@ -12,6 +12,9 @@
     firstSeen date in the JSON (not a fixed 30-day window). -LookbackDays is only used as a fallback
     for apps without a firstSeen entry.
 
+    Note: this repository is sanitized for sharing. The shared script keeps WorkspaceId redacted in-code,
+    so Log Analytics enrichment requires local/private customization before -UseLA will return results.
+
 .REQUIREMENTS
     Microsoft Graph PowerShell SDK
     Permissions: Application.Read.All
@@ -20,10 +23,8 @@
     Path to the JSON tracker file. Default: .\disabled-apps-tracker.json
 
 .PARAMETER UseLA
-    Enable Log Analytics queries for attempted sign-ins. Requires -WorkspaceId.
-
-.PARAMETER WorkspaceId
-    Log Analytics workspace ID for sign-in queries.
+    Enable Log Analytics queries for attempted sign-ins. In the shared sanitized script, this also
+    requires local/private customization of the in-code WorkspaceId value.
 
 .PARAMETER LookbackDays
     Fallback lookback window (days) if an app has no firstSeen date in JSON. Default: 90.
@@ -33,7 +34,20 @@
     Path to export tracker items as CSV.
 
 .PARAMETER HtmlReport
-    Generate an HTML report in the current directory.
+    Generate an HTML report under .\reports\<yyyyMMdd>\.
+
+.EXAMPLE
+    .\Report-DisabledAppReg.ps1
+
+.EXAMPLE
+    .\Report-DisabledAppReg.ps1 -OutCsv .\disabled-apps.csv
+
+.EXAMPLE
+    .\Report-DisabledAppReg.ps1 -HtmlReport
+
+.EXAMPLE
+    # After local/private WorkspaceId configuration
+    .\Report-DisabledAppReg.ps1 -UseLA
 #>
 
 ## todo: once a week backup the json to \backup force with a switch

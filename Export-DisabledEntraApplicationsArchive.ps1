@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  Exports disabled Entra applications and their related objects into a restorable archive structure.
+  Exports disabled Entra applications and related Graph data into a JSON archive structure.
 
 .DESCRIPTION
-  Finds tenant-owned applications that are disabled at the app registration level
-  and, optionally, applications whose related service principals are disabled.
+  Finds applications that are disabled at the app registration level and,
+  optionally, applications whose related service principals are disabled.
   For each matching app, the script exports a full-fidelity JSON archive that
   preserves the raw Graph payload for the application plus related objects that
   matter for reference, review, and future recreation:

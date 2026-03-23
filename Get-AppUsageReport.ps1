@@ -20,8 +20,9 @@
   When enabled in your local/private copy, queries SigninLogs,
   AADServicePrincipalSignInLogs, and AADManagedIdentitySignInLogs
   (isfuzzy=true, missing tables skipped). Omit for Graph-only operation.
-  In this sanitized shared script, WorkspaceId is reset in-code unless you
-  customize that section locally.
+  In this sanitized shared script, the parameter value is reset in-code unless
+  you customize that section locally, so passing -WorkspaceId alone is not
+  sufficient in the shared copy.
 
 .PARAMETER LookbackDays
   How far back to query Log Analytics. Should not exceed your workspace
@@ -52,11 +53,11 @@
   .\Get-AppUsageReport.ps1 -OutCsv .\report.csv
 
 .EXAMPLE
-  # Graph + Log Analytics (after local private configuration)
+  # Graph + Log Analytics (after local private configuration / script customization)
   .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -OutCsv .\report.csv
 
 .EXAMPLE
-  # Custom thresholds, include never-used apps (after local private configuration)
+  # Custom thresholds, include never-used apps (after local private configuration / script customization)
   .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -UnusedDays 90 -LookbackDays 90 -IncludeNeverUsed -OutCsv .\report.csv
 
 .EXAMPLE
