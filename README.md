@@ -259,7 +259,8 @@ This repository is sanitized. Values such as tenant ID, client ID, certificate t
 
 Current behavior:
 
-- `Get-AppUsageReport.ps1` and `Get-AppUsageReport-Local.ps1` expect the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
+- `Get-AppUsageReport.ps1` expects the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
+- `Get-AppUsageReport-Local.ps1` first checks for a working existing Graph session, then tries app-certificate auth when configured, and otherwise falls back to interactive sign-in for testing
 - `Report-DisabledAppReg.ps1` currently uses interactive `Connect-MgGraph -Scopes "Application.Read.All"` and its hardcoded `WorkspaceId` is intentionally redacted in the shared repo
 - `Export-DisabledEntraApplicationsArchive.ps1` first checks `Get-MgContext`; if Graph is already connected it reuses that session, otherwise it falls back to interactive sign-in when no app certificate values are set
 

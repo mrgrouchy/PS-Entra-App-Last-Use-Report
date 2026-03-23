@@ -214,7 +214,42 @@ $TenantId  = ""
 $ClientId  = ""
 $Thumbprint = ""   # cert must exist in CurrentUser\My or LocalMachine\My
 
-Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $Thumbprint -NoWelcome
+function Test-GraphConnectivity {
+  try {
+    Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$top=1&`$select=id" -Method GET -ErrorAction Stop | Out-Null
+    return $true
+  }
+  catch {
+    return $false
+  }
+}
+
+$usingExistingGraph = $false
+try {
+  $ctx = Get-MgContext -ErrorAction Stop
+  if ($ctx -and $ctx.Account -and (Test-GraphConnectivity)) {
+    $usingExistingGraph = $true
+    Write-Host "Using existing Microsoft Graph session: $($ctx.Account) ($($ctx.TenantId))" -ForegroundColor DarkGray
+  }
+}
+catch {
+  $usingExistingGraph = $false
+}
+
+if (-not $usingExistingGraph) {
+  $hasAppAuthConfig = (-not [string]::IsNullOrWhiteSpace($TenantId)) -and
+                      (-not [string]::IsNullOrWhiteSpace($ClientId)) -and
+                      (-not [string]::IsNullOrWhiteSpace($Thumbprint))
+
+  if ($hasAppAuthConfig) {
+    Write-Host "No active Graph session found. Connecting with app certificate auth..." -ForegroundColor Cyan
+    Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $Thumbprint -NoWelcome
+  }
+  else {
+    Write-Host "No active Graph session found and app auth values are empty. Using interactive Graph sign-in for testing..." -ForegroundColor Cyan
+    Connect-MgGraph -Scopes "Application.Read.All","Directory.Read.All","AuditLog.Read.All" -NoWelcome
+  }
+}
 
 
 
