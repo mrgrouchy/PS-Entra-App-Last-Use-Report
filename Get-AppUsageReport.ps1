@@ -9,6 +9,10 @@
   sign-in tables (SigninLogs, AADServicePrincipalSignInLogs,
   AADManagedIdentitySignInLogs).
 
+  This script is intended to become the Azure-hosted / automation-oriented
+  variant of the report over time. The local/resumable operator workflow lives
+  in Get-AppUsageReport-Local.ps1.
+
   Note: this repository is sanitized for sharing. Authentication and workspace
   values are redacted and should be supplied in your private environment.
 
@@ -73,19 +77,25 @@ param(
   [string]$WorkspaceId = "",
   [int]$LookbackDays  = 90,
   [int]$Top           = 0,
-  [switch]$IncludeNeverUsed = $true,
+  [switch]$IncludeNeverUsed,
   [string]$OutCsv     = "",
   [string]$InputCsv   = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:UseDependencyGraphBatch = $true
+
+if (-not $PSBoundParameters.ContainsKey('IncludeNeverUsed')) {
+  $IncludeNeverUsed = $true
+}
 
 # TODO(AzureAutomation):
 # - Replace certificate-thumbprint auth with a non-interactive Azure Automation approach.
 # - Preferred options:
 #   1. System-assigned or user-assigned managed identity for Graph and Log Analytics
 #   2. Automation account Run As / app registration only if MI is not viable
+# - Keep this script aligned to unattended Azure execution semantics; local/operator convenience features belong in Get-AppUsageReport-Local.ps1.
 # - Add an auth helper that detects local execution vs Azure Automation and chooses the correct connection flow.
 # - Move tenant/app/workspace settings to Automation variables, managed identity context, or environment variables.
 # - Remove the hardcoded/sanitized auth placeholders once the production auth path is implemented.
@@ -217,11 +227,15 @@ if ($useLA) {
 function Get-AllGraphPages {
   param([string]$Uri)
 
-  $results = @()
+  $results = [System.Collections.Generic.List[object]]::new()
 
   do {
     $resp = Invoke-MgGraphRequest -Uri $Uri -Method GET
-    if ($null -ne $resp.value) { $results += $resp.value }
+    if ($null -ne $resp.value) {
+      foreach ($item in @($resp.value)) {
+        $null = $results.Add($item)
+      }
+    }
 
     if ($resp -is [System.Collections.IDictionary]) {
       $Uri = $resp['@odata.nextLink']
@@ -232,7 +246,7 @@ function Get-AllGraphPages {
 
   } while ($Uri)
 
-  return $results
+  return @($results)
 }
 
 # ------------------------------------------------------------
@@ -287,6 +301,37 @@ function Get-GraphActivityTimes {
     AppAuthClientUtc     = if ($acli) { [datetime]$acli } else { $null }
     AppAuthResourceUtc   = if ($ares) { [datetime]$ares } else { $null }
   }
+}
+
+function Get-MaxDate {
+  param([object[]]$Dates)
+
+  $latest = $null
+  foreach ($dateValue in $Dates) {
+    if ($null -eq $dateValue) { continue }
+    if ($null -eq $latest -or $dateValue -gt $latest) {
+      $latest = $dateValue
+    }
+  }
+
+  return $latest
+}
+
+function Get-LatestCredentialEndDate {
+  param([array]$Credentials)
+
+  $latest = $null
+  foreach ($credential in @($Credentials)) {
+    $endDateTime = Get-Prop $credential "endDateTime"
+    if (-not $endDateTime) { continue }
+
+    $candidate = [datetime]$endDateTime
+    if ($null -eq $latest -or $candidate -gt $latest) {
+      $latest = $candidate
+    }
+  }
+
+  return $latest
 }
 
 # ------------------------------------------------------------
@@ -362,6 +407,168 @@ function Get-FederatedCredentialInfo {
       Count       = $null
       CheckStatus = 'Unavailable'
     }
+  }
+}
+
+function Get-ServicePrincipalDependencyInfoFallback {
+  param(
+    [string]$SpId,
+    [string]$AppRegObjectId
+  )
+
+  return [pscustomobject]@{
+    RoleAssignments = Get-AppRoleAssignments $SpId
+    OAuthClient     = Get-OAuthGrantsClient $SpId
+    OAuthResource   = Get-OAuthGrantsResource $SpId
+    SyncInfo        = Get-SynchronizationJobInfo $SpId
+    FedCredInfo     = Get-FederatedCredentialInfo $AppRegObjectId
+  }
+}
+
+function Get-ServicePrincipalDependencyInfo {
+  param(
+    [string]$SpId,
+    [string]$AppRegObjectId
+  )
+
+  if (-not $script:UseDependencyGraphBatch) {
+    return Get-ServicePrincipalDependencyInfoFallback -SpId $SpId -AppRegObjectId $AppRegObjectId
+  }
+
+  $requests = [System.Collections.Generic.List[object]]::new()
+  $null = $requests.Add(@{
+      id     = 'roleAssignments'
+      method = 'GET'
+      url    = "servicePrincipals/$SpId/appRoleAssignedTo?`$top=999"
+    })
+  $null = $requests.Add(@{
+      id     = 'oauthClient'
+      method = 'GET'
+      url    = "oauth2PermissionGrants?`$filter=clientId eq '$SpId'"
+    })
+  $null = $requests.Add(@{
+      id     = 'oauthResource'
+      method = 'GET'
+      url    = "oauth2PermissionGrants?`$filter=resourceId eq '$SpId'"
+    })
+  $null = $requests.Add(@{
+      id     = 'syncJobs'
+      method = 'GET'
+      url    = "servicePrincipals/$SpId/synchronization/jobs"
+    })
+
+  if (-not [string]::IsNullOrWhiteSpace($AppRegObjectId)) {
+    $null = $requests.Add(@{
+        id     = 'fedCreds'
+        method = 'GET'
+        url    = "applications/$AppRegObjectId/federatedIdentityCredentials"
+      })
+  }
+
+  $batchBody = @{ requests = @($requests) } | ConvertTo-Json -Depth 8 -Compress
+
+  try {
+    $batchResponse = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/`$batch" -Method POST -Body $batchBody -ContentType 'application/json' -ErrorAction Stop
+  }
+  catch {
+    $script:UseDependencyGraphBatch = $false
+    Write-Verbose "Graph dependency batch failed once; falling back to individual requests for the rest of the run. $_"
+    return Get-ServicePrincipalDependencyInfoFallback -SpId $SpId -AppRegObjectId $AppRegObjectId
+  }
+
+  $responsesById = @{}
+  foreach ($response in @($batchResponse.responses)) {
+    $responseId = [string](Get-Prop $response 'id')
+    if ($responseId) {
+      $responsesById[$responseId] = $response
+    }
+  }
+
+  $roleAssignments = $null
+  $oauthClient = $null
+  $oauthResource = $null
+  $syncInfo = $null
+  $fedCredInfo = $null
+
+  $roleResponse = $responsesById['roleAssignments']
+  if ($roleResponse -and (Get-Prop $roleResponse 'status') -eq 200) {
+    $roleBody = Get-Prop $roleResponse 'body'
+    $roleAssignments = @(Get-Prop $roleBody 'value').Count
+    $roleNextLink = Get-Prop $roleBody '@odata.nextLink'
+    if ($roleNextLink) {
+      if ($roleNextLink -notmatch '^https://') {
+        $roleNextLink = "https://graph.microsoft.com/v1.0/$roleNextLink"
+      }
+      $roleAssignments += @(Get-AllGraphPages $roleNextLink).Count
+    }
+  }
+  else {
+    $roleAssignments = Get-AppRoleAssignments $SpId
+  }
+
+  $oauthClientResponse = $responsesById['oauthClient']
+  if ($oauthClientResponse -and (Get-Prop $oauthClientResponse 'status') -eq 200) {
+    $oauthClient = @(Get-Prop (Get-Prop $oauthClientResponse 'body') 'value').Count
+  }
+  else {
+    $oauthClient = Get-OAuthGrantsClient $SpId
+  }
+
+  $oauthResourceResponse = $responsesById['oauthResource']
+  if ($oauthResourceResponse -and (Get-Prop $oauthResourceResponse 'status') -eq 200) {
+    $oauthResource = @(Get-Prop (Get-Prop $oauthResourceResponse 'body') 'value').Count
+  }
+  else {
+    $oauthResource = Get-OAuthGrantsResource $SpId
+  }
+
+  $syncResponse = $responsesById['syncJobs']
+  if ($syncResponse -and (Get-Prop $syncResponse 'status') -eq 200) {
+    $jobs = @(Get-Prop (Get-Prop $syncResponse 'body') 'value')
+    $activeStates = @('Active', 'InProgress', 'Running')
+    $activeCount = 0
+    foreach ($job in $jobs) {
+      $state = Get-ValueByPath $job 'status.code'
+      if ($state -and ($activeStates -contains $state)) {
+        $activeCount++
+      }
+    }
+
+    $syncInfo = [pscustomobject]@{
+      JobCount    = $jobs.Count
+      ActiveCount = $activeCount
+      CheckStatus = 'Ok'
+    }
+  }
+  else {
+    $syncInfo = Get-SynchronizationJobInfo $SpId
+  }
+
+  if ([string]::IsNullOrWhiteSpace($AppRegObjectId)) {
+    $fedCredInfo = [pscustomobject]@{
+      Count       = 0
+      CheckStatus = 'NotApplicable'
+    }
+  }
+  else {
+    $fedCredResponse = $responsesById['fedCreds']
+    if ($fedCredResponse -and (Get-Prop $fedCredResponse 'status') -eq 200) {
+      $fedCredInfo = [pscustomobject]@{
+        Count       = @(Get-Prop (Get-Prop $fedCredResponse 'body') 'value').Count
+        CheckStatus = 'Ok'
+      }
+    }
+    else {
+      $fedCredInfo = Get-FederatedCredentialInfo $AppRegObjectId
+    }
+  }
+
+  return [pscustomobject]@{
+    RoleAssignments = $roleAssignments
+    OAuthClient     = $oauthClient
+    OAuthResource   = $oauthResource
+    SyncInfo        = $syncInfo
+    FedCredInfo     = $fedCredInfo
   }
 }
 
@@ -517,11 +724,14 @@ $now    = Get-Date
 $nowUtc = $now.ToUniversalTime()
 
 $i = 0
+$progressEvery = if ($servicePrincipals.Count -ge 200) { 10 } elseif ($servicePrincipals.Count -ge 50) { 5 } else { 1 }
 $report = foreach ($sp in $servicePrincipals) {
 
   $i++
   $spName = Get-Prop $sp "displayName"
-  Write-Progress -Activity "Building report" -Status "$i / $($servicePrincipals.Count): $spName" -PercentComplete (($i / $servicePrincipals.Count) * 100)
+  if (($i -eq 1) -or (($i % $progressEvery) -eq 0) -or ($i -eq $servicePrincipals.Count)) {
+    Write-Progress -Activity "Building report" -Status "$i / $($servicePrincipals.Count): $spName" -PercentComplete (($i / $servicePrincipals.Count) * 100)
+  }
 
   $spAppId        = Get-Prop $sp "appId"
   $spId           = Get-Prop $sp "id"
@@ -577,9 +787,9 @@ $report = foreach ($sp in $servicePrincipals) {
     $lastInteractive,
     $lastServicePrincipal,
     $lastManagedIdentity
-  ) | Where-Object { $null -ne $_ }
+  )
 
-  $trueLastActivity = if ($allDates) { ($allDates | Sort-Object -Descending | Select-Object -First 1) } else { $null }
+  $trueLastActivity = Get-MaxDate -Dates $allDates
   $daysSince        = if ($trueLastActivity) { [int]($nowUtc - $trueLastActivity.ToUniversalTime()).TotalDays } else { $null }
 
   # --- App registration: created date + credentials ---
@@ -621,14 +831,18 @@ $report = foreach ($sp in $servicePrincipals) {
     $hasCerts   = $keyCreds.Count -gt 0
 
     if ($hasSecrets) {
-      $latest       = $pwCreds | Sort-Object { [datetime](Get-Prop $_ "endDateTime") } -Descending | Select-Object -First 1
-      $secretExpiry = Get-Prop $latest "endDateTime"
-      $secretExpired = $secretExpiry -and ([datetime]$secretExpiry -lt $now)
+      $secretExpiryDate = Get-LatestCredentialEndDate -Credentials $pwCreds
+      if ($secretExpiryDate) {
+        $secretExpiry = $secretExpiryDate.ToString("o")
+        $secretExpired = $secretExpiryDate -lt $now
+      }
     }
     if ($hasCerts) {
-      $latest     = $keyCreds | Sort-Object { [datetime](Get-Prop $_ "endDateTime") } -Descending | Select-Object -First 1
-      $certExpiry = Get-Prop $latest "endDateTime"
-      $certExpired = $certExpiry -and ([datetime]$certExpiry -lt $now)
+      $certExpiryDate = Get-LatestCredentialEndDate -Credentials $keyCreds
+      if ($certExpiryDate) {
+        $certExpiry = $certExpiryDate.ToString("o")
+        $certExpired = $certExpiryDate -lt $now
+      }
     }
   }
 
@@ -658,11 +872,12 @@ $report = foreach ($sp in $servicePrincipals) {
   }
 
   # --- Dependency checks ---
-  $roleAssignments = Get-AppRoleAssignments $spId
-  $oauthClient     = Get-OAuthGrantsClient $spId
-  $oauthResource   = Get-OAuthGrantsResource $spId
-  $syncInfo        = Get-SynchronizationJobInfo $spId
-  $fedCredInfo     = Get-FederatedCredentialInfo $appRegObjectId
+  $dependencyInfo  = Get-ServicePrincipalDependencyInfo -SpId $spId -AppRegObjectId $appRegObjectId
+  $roleAssignments = $dependencyInfo.RoleAssignments
+  $oauthClient     = $dependencyInfo.OAuthClient
+  $oauthResource   = $dependencyInfo.OAuthResource
+  $syncInfo        = $dependencyInfo.SyncInfo
+  $fedCredInfo     = $dependencyInfo.FedCredInfo
 
   # --- Risk level (activity + credential liveness) ---
   $tooNew = $null -ne $createdDaysAgo -and $createdDaysAgo -lt 30

@@ -38,15 +38,16 @@ They do not disable, delete, revoke, or modify tenant objects.
 
 ### `Get-AppUsageReport.ps1`
 
-Builds a usage and dependency report for service principals. It supports Graph-only operation or optional Log Analytics enrichment.
+Builds a usage and dependency report for service principals. It supports Graph-only operation or optional Log Analytics enrichment, and is the planned Azure-hosted / automation-oriented variant of the report over time.
 
 Key behavior:
 
 - loads service principals and app registrations in bulk
+- batches per-service-principal dependency lookups through Microsoft Graph where possible, with fallback to individual calls if batching fails
 - classifies apps as `TenantOwned`, `MicrosoftFirstParty`, or `ConsentedExternalApp`
 - calculates `TrueLastActivity` from all available activity sources
 - inspects credential expiry and dependency signals
-- assigns `RiskLevel`, `CandidateForDisableReview`, and `RecommendedAction`
+- assigns `RiskLevel`, `CandidateForDisableReview`, `RecommendedAction`, and `RecommendedActionReason`
 - can scope processing with an input CSV
 - can export the final report to CSV
 
@@ -73,11 +74,12 @@ Parameters:
 
 ### `Get-AppUsageReport-Local.ps1`
 
-This is the local/resumable variant of the same report. It adds checkpoint-based resume support for long runs or interrupted sessions.
+This is the local/resumable variant of the same report. It is intended for operator-driven local execution and adds checkpoint-based resume support for long runs or interrupted sessions.
 
 Extra behavior compared with `Get-AppUsageReport.ps1`:
 
 - writes a run-state JSON file while processing
+- lets you control how often the checkpoint file is updated with `-CheckpointInterval`
 - if `-OutCsv` is omitted, writes `.\Get-AppUsageReport-<yyyy-MM-dd>.csv`
 - on same-day reruns, prompts to reuse or delete the existing checkpoint (default behavior)
 - automatically deletes prior-day checkpoints and starts a fresh iteration
@@ -101,6 +103,7 @@ Additional parameters:
 |---|---|---|
 | `-RunStatePath` | derived automatically | Checkpoint JSON path; when `-OutCsv` is set it defaults to the same folder and base name (for example `report.csv` -> `report.runstate.json`) |
 | `-NoResume` | off | Ignore existing checkpoint |
+| `-CheckpointInterval` | `25` | Save the run-state file every N processed service principals |
 | `-SameDayRunStateAction` | `Prompt` | Same-day checkpoint behavior: `Prompt`, `Reuse`, or `Delete` |
 | `-KeepRunState` | off | Deprecated compatibility switch (no longer required) |
 
@@ -226,6 +229,8 @@ Important classification behavior:
 
 `RecommendedActionReason` is a short human-readable explanation of why that action was chosen for the row.
 
+Both reporting scripts now try to batch dependency checks per service principal through Microsoft Graph for better large-tenant performance. If a batch request fails, they fall back to the older individual-request path for the rest of the run.
+
 | `RecommendedAction` | Meaning in practice |
 |---|---|
 | `Exempt` | Microsoft first-party service principal. Exclude from ordinary cleanup review driven by this report. |
@@ -273,7 +278,7 @@ This repository is sanitized. Values such as tenant ID, client ID, certificate t
 
 Current behavior:
 
-- `Get-AppUsageReport.ps1` expects the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
+- `Get-AppUsageReport.ps1` is the planned Azure-hosted / automation runner; today it still expects the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
 - `Get-AppUsageReport-Local.ps1` first checks for a working existing Graph session, then tries app-certificate auth when configured, and otherwise falls back to interactive sign-in for testing
 - `Report-DisabledAppReg.ps1` currently uses interactive `Connect-MgGraph -Scopes "Application.Read.All"` and its hardcoded `WorkspaceId` is intentionally redacted in the shared repo
 - `Export-DisabledEntraApplicationsArchive.ps1` first checks `Get-MgContext`; if Graph is already connected it reuses that session, otherwise it falls back to interactive sign-in when no app certificate values are set
