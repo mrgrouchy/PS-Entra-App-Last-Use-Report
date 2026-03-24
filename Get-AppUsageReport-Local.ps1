@@ -968,7 +968,16 @@ foreach ($sp in $servicePrincipals) {
     )
   )
 
-  # RecommendedAction: staged guidance per sub-class and dependency state
+  # RecommendedAction is a review workflow hint, not an automated remediation command.
+  # Read it together with RiskLevel and DependencySignals:
+  # - Exempt: Microsoft first-party SP; do not target for cleanup from this report.
+  # - NoAction: still active or too new; keep monitoring instead of changing anything.
+  # - RevokeGrants: consented external app with no dependency signals beyond NonTenantOwned;
+  #   prefer reviewing/removing tenant consent rather than disabling a non-tenant-owned app.
+  # - DisableSP: tenant-owned app with no dependency signals; strongest cleanup candidate,
+  #   but still intended for staged disable review rather than direct deletion.
+  # - ReviewDependencies: one or more dependency signals exist; inspect what relies on the
+  #   service principal before disabling it or revoking grants.
   $recommendedAction = if ($spSubClass -eq 'MicrosoftFirstParty') {
     'Exempt'
   } elseif ($riskLevel -in @("Active", "Ignore")) {

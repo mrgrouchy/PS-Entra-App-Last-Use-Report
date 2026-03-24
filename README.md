@@ -221,6 +221,16 @@ Important classification behavior:
 - `ConsentedExternalApp` is kept separate from tenant-owned cleanup decisions
 - `CandidateForDisableReview` is conservative and meant for review, not direct action
 
+`RecommendedAction` is a staged next-step hint for reviewers. It is not an automated remediation instruction and should be read together with `RiskLevel` and `DependencySignals`.
+
+| `RecommendedAction` | Meaning in practice |
+|---|---|
+| `Exempt` | Microsoft first-party service principal. Exclude from ordinary cleanup review driven by this report. |
+| `NoAction` | The app is still active or too new to treat as unused. Keep monitoring rather than making changes. |
+| `RevokeGrants` | Consent-controlled external app with no dependency signals beyond `NonTenantOwned`. Review tenant consent and consider removing grants instead of disabling the service principal. |
+| `DisableSP` | Tenant-owned app with no dependency signals. Strong cleanup candidate for staged disable review, but still not a direct delete recommendation. |
+| `ReviewDependencies` | Signals such as API usage, assignments, grants, provisioning jobs, or federated credentials exist. Review those dependencies before changing the app. |
+
 ## Archive Output
 
 The archive script writes a structure like this:
