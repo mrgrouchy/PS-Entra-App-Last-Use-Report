@@ -41,7 +41,8 @@
   Default: enabled. Use -IncludeNeverUsed:$false to exclude never-used apps.
 
 .PARAMETER OutCsv
-  Path to export a CSV report. If omitted, no file is written.
+  Optional path for exporting the final app-usage report to CSV.
+  If omitted, the report is only shown in the console and no CSV file is written.
 
 .PARAMETER InputCsv
   Optional path to an input CSV used to scope processing.
