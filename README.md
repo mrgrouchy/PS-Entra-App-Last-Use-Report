@@ -2,7 +2,7 @@
 
 PowerShell scripts for reviewing Entra ID applications and service principals during cleanup work. The repo currently contains:
 
-- `Get-AppUsageReport.ps1`: tenant-wide or targeted usage/dependency report
+- `Get-AppUsageReport-AzurePlaceholder.ps1`: tenant-wide or targeted usage/dependency report placeholder for Azure-hosted automation
 - `Get-AppUsageReport-Local.ps1`: the same report with resumable local checkpointing
 - `Report-DisabledAppReg.ps1`: disabled app-registration tracker with optional Log Analytics enrichment and HTML reporting
 - `Export-DisabledEntraApplicationsArchive.ps1`: JSON-first archive of disabled applications for later reference or partial recreation
@@ -36,9 +36,9 @@ They do not disable, delete, revoke, or modify tenant objects.
 
 ## Scripts
 
-### `Get-AppUsageReport.ps1`
+### `Get-AppUsageReport-AzurePlaceholder.ps1`
 
-Builds a usage and dependency report for service principals. It supports Graph-only operation or optional Log Analytics enrichment, and is the planned Azure-hosted / automation-oriented variant of the report over time.
+Builds a usage and dependency report for service principals. It supports Graph-only operation or optional Log Analytics enrichment, and serves as a placeholder for the future Azure-hosted / automation-oriented variant of the report.
 
 Key behavior:
 
@@ -54,10 +54,10 @@ Key behavior:
 Typical usage:
 
 ```powershell
-.\Get-AppUsageReport.ps1 -OutCsv .\report.csv
-.\Get-AppUsageReport.ps1 -InputCsv .\targets.csv -OutCsv .\report.csv
-.\Get-AppUsageReport.ps1 -Top 200 -OutCsv .\report.csv
-.\Get-AppUsageReport.ps1 -IncludeNeverUsed:$false -OutCsv .\report.csv
+.\Get-AppUsageReport-AzurePlaceholder.ps1 -OutCsv .\report.csv
+.\Get-AppUsageReport-AzurePlaceholder.ps1 -InputCsv .\targets.csv -OutCsv .\report.csv
+.\Get-AppUsageReport-AzurePlaceholder.ps1 -Top 200 -OutCsv .\report.csv
+.\Get-AppUsageReport-AzurePlaceholder.ps1 -IncludeNeverUsed:$false -OutCsv .\report.csv
 ```
 
 Parameters:
@@ -76,7 +76,7 @@ Parameters:
 
 This is the local/resumable variant of the same report. It is intended for operator-driven local execution and adds checkpoint-based resume support for long runs or interrupted sessions.
 
-Extra behavior compared with `Get-AppUsageReport.ps1`:
+Extra behavior compared with `Get-AppUsageReport-AzurePlaceholder.ps1`:
 
 - writes a run-state JSON file while processing
 - lets you control how often the checkpoint file is updated with `-CheckpointInterval`
@@ -280,7 +280,7 @@ This repository is sanitized. Values such as tenant ID, client ID, certificate t
 
 Current behavior:
 
-- `Get-AppUsageReport.ps1` is the planned Azure-hosted / automation runner; today it still expects the in-script `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` block to be populated in your private copy
+- `Get-AppUsageReport-AzurePlaceholder.ps1` is the placeholder for the older Azure-hosted / automation runner approach; the actual ALM automation runbook lives at `ALM/ALM-AppUsageReport.ps1`
 - `Get-AppUsageReport-Local.ps1` first checks for a working existing Graph session, then tries app-certificate auth when configured, and otherwise falls back to interactive sign-in for testing
 - `Report-DisabledAppReg.ps1` currently uses interactive `Connect-MgGraph -Scopes "Application.Read.All"` and its hardcoded `WorkspaceId` is intentionally redacted in the shared repo
 - `Export-DisabledEntraApplicationsArchive.ps1` first checks `Get-MgContext`; if Graph is already connected it reuses that session, otherwise it falls back to interactive sign-in when no app certificate values are set

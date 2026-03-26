@@ -9,9 +9,10 @@
   sign-in tables (SigninLogs, AADServicePrincipalSignInLogs,
   AADManagedIdentitySignInLogs).
 
-  This script is intended to become the Azure-hosted / automation-oriented
-  variant of the report over time. The local/resumable operator workflow lives
-  in Get-AppUsageReport-Local.ps1.
+  This script is a placeholder for the Azure-hosted / automation-oriented
+  variant of the report. The local/resumable operator workflow lives in
+  Get-AppUsageReport-Local.ps1, and the ALM automation runbook lives in
+  ALM/ALM-AppUsageReport.ps1.
 
   Note: this repository is sanitized for sharing. Authentication and workspace
   values are redacted and should be supplied in your private environment.
@@ -55,23 +56,23 @@
 
 .EXAMPLE
   # Graph only — 180d SP activity, no LA required
-  .\Get-AppUsageReport.ps1 -OutCsv .\report.csv
+  .\Get-AppUsageReport-AzurePlaceholder.ps1 -OutCsv .\report.csv
 
 .EXAMPLE
   # Graph + Log Analytics (after local private configuration / script customization)
-  .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -OutCsv .\report.csv
+  .\Get-AppUsageReport-AzurePlaceholder.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -OutCsv .\report.csv
 
 .EXAMPLE
   # Custom thresholds, include never-used apps (after local private configuration / script customization)
-  .\Get-AppUsageReport.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -UnusedDays 90 -LookbackDays 90 -IncludeNeverUsed -OutCsv .\report.csv
+  .\Get-AppUsageReport-AzurePlaceholder.ps1 -WorkspaceId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -UnusedDays 90 -LookbackDays 90 -IncludeNeverUsed -OutCsv .\report.csv
 
 .EXAMPLE
   # Filter by specific SP IDs from input CSV
-  .\Get-AppUsageReport.ps1 -InputCsv .\input.csv -OutCsv .\report.csv
+  .\Get-AppUsageReport-AzurePlaceholder.ps1 -InputCsv .\input.csv -OutCsv .\report.csv
 
 .EXAMPLE
   # Process only the first 200 filtered service principals
-  .\Get-AppUsageReport.ps1 -Top 200 -OutCsv .\report.csv
+  .\Get-AppUsageReport-AzurePlaceholder.ps1 -Top 200 -OutCsv .\report.csv
 #>
 param(
   [int]$UnusedDays    = 180,
