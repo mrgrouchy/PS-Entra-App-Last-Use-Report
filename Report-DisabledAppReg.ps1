@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Tracks disabled Entra applications over time and records when they were first observed disabled.
+    Tracks disabled Entra application registrations, records when they were first observed disabled, and can enrich the tracker with attempted sign-in activity.
 
 .DESCRIPTION
     Creates/updates a JSON file in the working directory:
@@ -12,42 +12,32 @@
     firstSeen date in the JSON (not a fixed 30-day window). -LookbackDays is only used as a fallback
     for apps without a firstSeen entry.
 
-    Note: this repository is sanitized for sharing. The shared script keeps WorkspaceId redacted in-code,
-    so Log Analytics enrichment requires local/private customization before -UseLA will return results.
+    The script can also export the tracked data to CSV and generate an HTML report grouped by
+    applications with and without attempted sign-in activity.
 
 .REQUIREMENTS
     Microsoft Graph PowerShell SDK
-    Permissions: Application.Read.All
+    Permissions: Application.ReadWrite.All
 
 .PARAMETER JsonPath
-    Path to the JSON tracker file. Default: .\disabled-apps-tracker.json
+    Path to the JSON tracker file used to persist disabled application history.
+    Default: .\disabled-apps-tracker.json
 
 .PARAMETER UseLA
-    Enable Log Analytics queries for attempted sign-ins. In the shared sanitized script, this also
-    requires local/private customization of the in-code WorkspaceId value.
+    Enable Log Analytics queries for attempted sign-ins for currently disabled apps.
+    In the shared/sanitized script, this relies on the redacted WorkspaceId placeholder in the script.
+    Replace it locally before use. Queries start from each app's firstSeen date where available.
 
 .PARAMETER LookbackDays
-    Fallback lookback window (days) if an app has no firstSeen date in JSON. Default: 90.
+    Fallback lookback window in days used only when an app has no firstSeen date in the JSON tracker.
+    Default: 90.
     Apps WITH firstSeen will query from that date regardless of this parameter.
 
 .PARAMETER OutCsv
-    Path to export tracker items as CSV.
+    Optional path for exporting the tracker contents to CSV.
 
 .PARAMETER HtmlReport
-    Generate an HTML report under .\reports\<yyyyMMdd>\.
-
-.EXAMPLE
-    .\Report-DisabledAppReg.ps1
-
-.EXAMPLE
-    .\Report-DisabledAppReg.ps1 -OutCsv .\disabled-apps.csv
-
-.EXAMPLE
-    .\Report-DisabledAppReg.ps1 -HtmlReport
-
-.EXAMPLE
-    # After local/private WorkspaceId configuration
-    .\Report-DisabledAppReg.ps1 -UseLA
+    Generate an HTML report under .\reports\<yyyyMMdd>\ in the current working directory.
 #>
 
 ## todo: once a week backup the json to \backup force with a switch
@@ -236,30 +226,70 @@ function New-DisabledAppsHtmlReport {
 }
 
 # ----------------------------
+# Helper: Safe property read from either Hashtable or PSObject
+# ----------------------------
+function Get-Prop {
+    param($obj, [string]$key)
+    if ($null -eq $obj) { return $null }
+    if ($obj -is [System.Collections.IDictionary]) { return $obj[$key] }
+    $p = $obj.PSObject.Properties[$key]
+    if ($p) { return $p.Value } else { return $null }
+}
+
+# ----------------------------
+# Helper: Dictionary-safe nested property navigation
+# ----------------------------
+function Get-ValueByPath {
+    param($obj, $path)
+
+    $cur = $obj
+    foreach ($p in $path.Split(".")) {
+        if ($null -eq $cur) { return $null }
+        if ($cur -is [System.Collections.IDictionary]) {
+            $cur = $cur[$p]
+        } else {
+            $prop = $cur.PSObject.Properties[$p]
+            $cur = if ($prop) { $prop.Value } else { $null }
+        }
+    }
+    return $cur
+}
+
+# ----------------------------
+# Helper: Get ALL pages from Graph (robust paging)
+# ----------------------------
+function Get-AllGraphPages {
+    param([string]$Uri)
+
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    do {
+        $resp = Invoke-MgGraphRequest -Uri $Uri -Method GET
+        if ($null -ne $resp.value) {
+            foreach ($item in @($resp.value)) {
+                $null = $results.Add($item)
+            }
+        }
+
+        if ($resp -is [System.Collections.IDictionary]) {
+            $Uri = $resp['@odata.nextLink']
+        } else {
+            $p = $resp.PSObject.Properties['@odata.nextLink']
+            $Uri = if ($p) { $p.Value } else { $null }
+        }
+    } while ($Uri)
+
+    return @($results)
+}
+
+# ----------------------------
 # Helper: Get ALL pages from Graph
 # ----------------------------
 function Get-AllDisabledApplications {
     # Your original intent: beta applications with filter isDisabled eq true
     $isDisabledFilter = "isDisabled eq true"
     $uri = "https://graph.microsoft.com/beta/applications?`$filter=$($isDisabledFilter)"
-
-    $all = @()
-
-    do {
-        $resp = Invoke-MgGraphRequest -Uri $uri -Method GET
-        if ($resp.value) { $all += $resp.value }
-
-        # Paging
-        if ($resp -is [System.Collections.IDictionary]) {
-            $uri = $resp['@odata.nextLink']
-        }
-        else {
-            $next = $resp.PSObject.Properties['@odata.nextLink']
-            $uri = if ($next) { $next.Value } else { $null }
-        }
-    } while ($uri)
-
-    return $all
+    return Get-AllGraphPages -Uri $uri
 }
 
 # ----------------------------
@@ -295,7 +325,7 @@ function Get-SignInStatsByAppId {
     $chunks = Split-IntoChunks -Items $AppInfos -ChunkSize 300
 
     foreach ($chunk in $chunks) {
-        $rows = @()
+        $rows = [System.Collections.Generic.List[string]]::new()
         foreach ($item in $chunk) {
             $appId = $item.AppId
             if (-not $appId) { continue }
@@ -306,12 +336,12 @@ function Get-SignInStatsByAppId {
             }
 
             $dt = ([datetime]$firstSeen).ToUniversalTime().ToString("o")
-            $rows += "'$appId', datetime($dt)"
+            $null = $rows.Add("'$appId', datetime($dt)")
         }
 
         if ($rows.Count -eq 0) { continue }
 
-        $rowsText = $rows -join ",`n    "
+        $rowsText = [string]::Join(",`n    ", @($rows))
         $kql = @"
 let apps = datatable(AppId:string, FirstSeen:datetime)[
     $rowsText
@@ -350,17 +380,17 @@ union isfuzzy=true
 # Main
 # ============================
 
-# Connect to Graph (read-only scope)
-Connect-MgGraph -Scopes "Application.Read.All" | Out-Null
+# Connect to Graph (your permission scope)
+Connect-MgGraph -Scopes "Application.ReadWrite.All" | Out-Null
 
 # Hardcoded Log Analytics workspace
-$WorkspaceId = ""
+$WorkspaceId = "<REDACTED-WORKSPACE-ID>"
 
 # Connect to Log Analytics if switched on
 $useLA = $UseLA.IsPresent
 
 if ($useLA) {
-    Write-Host "Log Analytics enabled (WorkspaceId: $WorkspaceId) — will query attempted sign-ins from each app's firstSeen date (fallback: $LookbackDays days)." -ForegroundColor Cyan
+    Write-Host "Log Analytics enabled (WorkspaceId configured locally) — will query attempted sign-ins from each app's firstSeen date (fallback: $LookbackDays days)." -ForegroundColor Cyan
     Connect-AzAccount | Out-Null
 }
 
@@ -372,6 +402,11 @@ $store = Get-JsonStore -Path $JsonPath
 
 # Ensure items is an array (ConvertFrom-Json can return $null for empty)
 if (-not $store.items) { $store.items = @() }
+
+# Convert items to List<T> for O(1) append performance
+$itemsList = [System.Collections.Generic.List[object]]::new()
+foreach ($item in @($store.items)) { $null = $itemsList.Add($item) }
+$store.items = $itemsList
 
 # Build an index for fast lookups (keyed by appId; you can switch to 'id' if preferred)
 $index = @{}
@@ -387,15 +422,16 @@ $apps = Get-AllDisabledApplications
 # Query attempted sign-ins for disabled apps (user + SP)
 $signInByAppId = @{}
 if ($useLA -and $apps.Count -gt 0) {
-    $appInfos = foreach ($app in $apps) {
+    $appInfos = [System.Collections.Generic.List[object]]::new()
+    foreach ($app in $apps) {
         $appId = $app.appId
         if (-not $appId) { continue }
         $firstSeen = $null
         if ($index.ContainsKey($appId)) { $firstSeen = $index[$appId].firstSeen }
-        [pscustomobject]@{ AppId = $appId; FirstSeen = $firstSeen }
+        $null = $appInfos.Add([pscustomobject]@{ AppId = $appId; FirstSeen = $firstSeen })
     }
     Write-Host "Querying attempted sign-ins for disabled apps..." -ForegroundColor Cyan
-    $signInByAppId = Get-SignInStatsByAppId -WorkspaceId $WorkspaceId -AppInfos $appInfos -LookbackDays $LookbackDays
+    $signInByAppId = Get-SignInStatsByAppId -WorkspaceId $WorkspaceId -AppInfos @($appInfos) -LookbackDays $LookbackDays
     Write-Host "  Sign-in stats for $($signInByAppId.Count) apps" -ForegroundColor Gray
 }
 
@@ -433,7 +469,14 @@ foreach ($app in $apps) {
         if ($signIn.LatestCorrelationIds) { $correlationIds = @($signIn.LatestCorrelationIds) }
     }
 
-    $lastAttemptedAny = @($lastInteractive, $lastNonInteractive, $lastServicePrincipal) | Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1
+    $lastAttemptedAny = $null
+    if ($lastInteractive -and ((-not $lastNonInteractive) -or ($lastInteractive -gt $lastNonInteractive)) -and ((-not $lastServicePrincipal) -or ($lastInteractive -gt $lastServicePrincipal))) {
+        $lastAttemptedAny = $lastInteractive
+    } elseif ($lastNonInteractive -and ((-not $lastServicePrincipal) -or ($lastNonInteractive -gt $lastServicePrincipal))) {
+        $lastAttemptedAny = $lastNonInteractive
+    } elseif ($lastServicePrincipal) {
+        $lastAttemptedAny = $lastServicePrincipal
+    }
 
     $hasAttemptsThisRun = ($countInteractive -gt 0) -or ($countNonInteractive -gt 0) -or ($countServicePrincipal -gt 0)
     if (-not $index.ContainsKey($appId)) {
@@ -456,7 +499,7 @@ foreach ($app in $apps) {
             latestCorrelationIds               = @($correlationIds)
         }
 
-        $store.items += $entry
+        $store.items.Add($entry)
         $index[$appId] = $entry
 
         $newCount++
@@ -464,20 +507,17 @@ foreach ($app in $apps) {
     else {
         # Already tracked → update lastSeen (do NOT overwrite firstSeen)
         $existing = $index[$appId]
-        foreach ($prop in @(
-            "lastAttemptedInteractiveSignIn",
-            "lastAttemptedNonInteractiveSignIn",
-            "lastAttemptedServicePrincipalSignIn",
-            "lastAttemptedAnySignIn",
-            "attemptedInteractiveCount",
-            "attemptedNonInteractiveCount",
-            "attemptedServicePrincipalCount",
-            "attemptedSignInHitCount",
-            "latestCorrelationIds"
-        )) {
-            if (-not $existing.PSObject.Properties[$prop]) {
-                Add-Member -InputObject $existing -MemberType NoteProperty -Name $prop -Value $null
-            }
+        # Pre-ensure all properties exist once
+        if (-not $existing.PSObject.Properties['lastAttemptedInteractiveSignIn']) {
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'lastAttemptedInteractiveSignIn' -Value $null
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'lastAttemptedNonInteractiveSignIn' -Value $null
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'lastAttemptedServicePrincipalSignIn' -Value $null
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'lastAttemptedAnySignIn' -Value $null
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'attemptedInteractiveCount' -Value 0
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'attemptedNonInteractiveCount' -Value 0
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'attemptedServicePrincipalCount' -Value 0
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'attemptedSignInHitCount' -Value 0
+            Add-Member -InputObject $existing -MemberType NoteProperty -Name 'latestCorrelationIds' -Value @()
         }
         $existing.displayName = $displayName
         $existing.objectId    = $objectId
