@@ -38,7 +38,7 @@ They do not disable, delete, revoke, or modify tenant objects.
 
 ### `Get-AppUsageReport-AzurePlaceholder.ps1`
 
-Builds a usage and dependency report for service principals. It supports Graph-only operation or optional Log Analytics enrichment, and serves as a placeholder for the future Azure-hosted / automation-oriented variant of the report.
+This file is a placeholder for the Azure-hosted / automation-oriented variant of the usage report. It remains in the repo as a reference shape for that path, but it is not the intended manual/operator entry point.
 
 Key behavior:
 
@@ -51,15 +51,6 @@ Key behavior:
 - can scope processing with an input CSV
 - can export the final report to CSV
 
-Typical usage:
-
-```powershell
-.\Get-AppUsageReport-AzurePlaceholder.ps1 -OutCsv .\report.csv
-.\Get-AppUsageReport-AzurePlaceholder.ps1 -InputCsv .\targets.csv -OutCsv .\report.csv
-.\Get-AppUsageReport-AzurePlaceholder.ps1 -Top 200 -OutCsv .\report.csv
-.\Get-AppUsageReport-AzurePlaceholder.ps1 -IncludeNeverUsed:$false -OutCsv .\report.csv
-```
-
 Parameters:
 
 | Parameter | Default | Notes |
@@ -71,6 +62,8 @@ Parameters:
 | `-IncludeNeverUsed` | `true` | Use `:$false` to exclude apps with no activity |
 | `-OutCsv` | empty | CSV export path |
 | `-InputCsv` | empty | Optional target list |
+
+For manual runs, use `Get-AppUsageReport-Local.ps1`.
 
 ### `Get-AppUsageReport-Local.ps1`
 
