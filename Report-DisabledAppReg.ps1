@@ -35,7 +35,8 @@
     Path to export tracker items as CSV.
 
 .PARAMETER HtmlReport
-    Generate an HTML report in the current directory.
+    Force-generate an HTML report for today's run.
+    A report is also auto-generated when today's report is missing.
 #>
 
 ## todo: once a week backup the json to \backup force with a switch
@@ -559,14 +560,29 @@ if ($OutCsv) {
     Write-Host "CSV exported to $OutCsv" -ForegroundColor Green
 }
 
-if ($HtmlReport) {
-    $reportDayFolder = Join-Path -Path (Join-Path -Path (Get-Location) -ChildPath "reports") -ChildPath (Get-Date -Format 'yyyyMMdd')
-    if (-not (Test-Path -LiteralPath $reportDayFolder)) {
-        New-Item -Path $reportDayFolder -ItemType Directory -Force | Out-Null
-    }
+$reportDate = Get-Date -Format 'yyyyMMdd'
+$reportRootFolder = Join-Path -Path (Get-Location) -ChildPath "reports"
+$reportDayFolder = Join-Path -Path $reportRootFolder -ChildPath $reportDate
+
+if (-not (Test-Path -LiteralPath $reportDayFolder)) {
+    New-Item -Path $reportDayFolder -ItemType Directory -Force | Out-Null
+}
+
+$todaysExistingHtml = @(Get-ChildItem -Path $reportDayFolder -Filter ("DisabledApps_Report_{0}_*.html" -f $reportDate) -File -ErrorAction SilentlyContinue)
+$shouldGenerateHtml = $HtmlReport -or ($todaysExistingHtml.Count -eq 0)
+
+if ($shouldGenerateHtml) {
     $HtmlPath = Join-Path -Path $reportDayFolder -ChildPath ("DisabledApps_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html")
     New-DisabledAppsHtmlReport -Items $store.items -OutputPath $HtmlPath
-    Write-Host "HTML report exported to $HtmlPath" -ForegroundColor Green
+    if ($HtmlReport) {
+        Write-Host "HTML report exported to $HtmlPath" -ForegroundColor Green
+    }
+    else {
+        Write-Host "No HTML report found for today; generated $HtmlPath" -ForegroundColor Green
+    }
+}
+else {
+    Write-Host "HTML report already exists for today in $reportDayFolder" -ForegroundColor DarkGray
 }
 
 # Output summary at the end so it remains visible after long app listings.
