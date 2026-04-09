@@ -743,16 +743,13 @@ if ($useLA) {
 
   $kql = @"
 union isfuzzy=true
-    (SigninLogs                      | where TimeGenerated > ago(${LookbackDays}d) | extend T = "i",  FederatedCredentialId = tostring(column_ifexists("FederatedCredentialId", ""))),
-    (AADServicePrincipalSignInLogs   | where TimeGenerated > ago(${LookbackDays}d) | extend T = "sp", FederatedCredentialId = tostring(column_ifexists("FederatedCredentialId", ""))),
-    (AADManagedIdentitySignInLogs    | where TimeGenerated > ago(${LookbackDays}d) | extend T = "mi", FederatedCredentialId = tostring(column_ifexists("FederatedCredentialId", "")))
+    (SigninLogs                      | where TimeGenerated > ago(${LookbackDays}d) | extend T = "i"),
+    (AADServicePrincipalSignInLogs   | where TimeGenerated > ago(${LookbackDays}d) | extend T = "sp"),
+    (AADManagedIdentitySignInLogs    | where TimeGenerated > ago(${LookbackDays}d) | extend T = "mi")
 | summarize
     LastInteractive    = maxif(TimeGenerated, T == "i"),
     LastServicePrincipal = maxif(TimeGenerated, T == "sp"),
-    LastManagedIdentity  = maxif(TimeGenerated, T == "mi"),
-    LastFederatedCredentialUse = maxif(TimeGenerated, isnotempty(FederatedCredentialId)),
-    FederatedCredentialUseCount = countif(isnotempty(FederatedCredentialId)),
-    RecentFederatedCredentialIds = make_set_if(FederatedCredentialId, isnotempty(FederatedCredentialId), 10)
+    LastManagedIdentity  = maxif(TimeGenerated, T == "mi")
   by AppId
 "@
 
@@ -1028,33 +1025,15 @@ foreach ($sp in $servicePrincipals) {
   $lastInteractive    = $null
   $lastServicePrincipal = $null
   $lastManagedIdentity  = $null
-  $lastFederatedCredentialUse = $null
-  $federatedCredentialUseCount = 0
-  $recentFederatedCredentialIds = ""
   $la = $laByAppId[$spAppId]
   if ($la) {
     $li = Get-Prop $la "LastInteractive"
     $lsp = Get-Prop $la "LastServicePrincipal"
     $lmi = Get-Prop $la "LastManagedIdentity"
-    $lfcu = Get-Prop $la "LastFederatedCredentialUse"
-    $fcuc = Get-Prop $la "FederatedCredentialUseCount"
-    $fcids = Get-Prop $la "RecentFederatedCredentialIds"
     $epoch = "0001-01-01"
     if ($li -and -not $li.StartsWith($epoch)) { $lastInteractive    = [datetime]$li }
     if ($lsp -and -not $lsp.StartsWith($epoch)) { $lastServicePrincipal = [datetime]$lsp }
     if ($lmi -and -not $lmi.StartsWith($epoch)) { $lastManagedIdentity = [datetime]$lmi }
-    if ($lfcu -and -not $lfcu.StartsWith($epoch)) { $lastFederatedCredentialUse = [datetime]$lfcu }
-    if ($null -ne $fcuc) {
-      try {
-        $federatedCredentialUseCount = [int]$fcuc
-      }
-      catch {
-        $federatedCredentialUseCount = 0
-      }
-    }
-    if ($fcids) {
-      $recentFederatedCredentialIds = (@($fcids) | Where-Object { $_ }) -join ";"
-    }
   }
 
   # --- True last activity: max across ALL vectors ---
@@ -1191,7 +1170,6 @@ foreach ($sp in $servicePrincipals) {
   if ($syncInfo.JobCount -gt 0)    { $depReasons += "ProvisioningJobs" }
   if ($syncInfo.CheckStatus -eq 'Unavailable') { $depReasons += "ProvisioningCheckUnavailable" }
   if ($fedCredInfo.Count -gt 0)    { $depReasons += "FederatedCredentials" }
-  if ($lastFederatedCredentialUse) { $depReasons += "FederatedCredentialUsedInSignInLogs" }
   if ($fedCredInfo.CheckStatus -eq 'Unavailable') { $depReasons += "FederatedCredentialCheckUnavailable" }
   if ($ownershipClass -eq 'NonTenantOwned') { $depReasons += "NonTenantOwned" }
 
@@ -1275,9 +1253,6 @@ foreach ($sp in $servicePrincipals) {
     LastInteractiveSignIn    = $lastInteractive
     LastServicePrincipalSignIn = $lastServicePrincipal
     LastManagedIdentitySignIn  = $lastManagedIdentity
-    LastFederatedCredentialUse = $lastFederatedCredentialUse
-    FederatedCredentialUseCount = $federatedCredentialUseCount
-    RecentFederatedCredentialIds = $recentFederatedCredentialIds
     DelegatedClientUtc       = $times.DelegatedClientUtc
     DelegatedResourceUtc     = $times.DelegatedResourceUtc
     AppAuthClientUtc         = $times.AppAuthClientUtc
