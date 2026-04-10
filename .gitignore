@@ -45,3 +45,6 @@ Docs/
 
 #copy
 *_copy.*
+
+.DS_Store
+**/.DS_Store
