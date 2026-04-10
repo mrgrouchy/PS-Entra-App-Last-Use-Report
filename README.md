@@ -137,13 +137,14 @@ Tracks disabled app registrations over time in a local JSON file and can optiona
 
 Key behavior:
 
-- fetches disabled applications from Graph
+- fetches disabled applications from Microsoft Graph beta (`applications?$filter=isDisabled eq true`) with paging
 - records `firstSeen` the first time a disabled app is observed
 - refreshes `lastSeen` on later runs without overwriting `firstSeen`
 - writes newly discovered disabled apps to the tracker before any optional Log Analytics lookup so first-run attempted sign-in checks start from the recorded `firstSeen`
 - optionally queries Log Analytics for attempted interactive, non-interactive, and service principal sign-ins
+- tracks `attemptedSignInHitCount` and recent `latestCorrelationIds` per app when Log Analytics is enabled
 - can export the tracker to CSV
-- can generate an HTML report under a dated `reports` folder
+- always ensures a dated HTML report exists for the current day under `.\reports\<yyyyMMdd>\` (and `-HtmlReport` forces an additional timestamped report)
 
 Typical usage:
 
@@ -162,7 +163,7 @@ Parameters:
 | `-UseLA` | off | Enables Log Analytics enrichment |
 | `-LookbackDays` | `90` | Fallback window only for apps without `firstSeen` |
 | `-OutCsv` | empty | Optional CSV export |
-| `-HtmlReport` | off | Write an HTML report under `.\reports\<yyyyMMdd>\` |
+| `-HtmlReport` | off | Force-write an HTML report under `.\reports\<yyyyMMdd>\` even if one already exists for today |
 
 ## Input CSV Support
 
