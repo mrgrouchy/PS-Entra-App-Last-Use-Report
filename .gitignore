@@ -46,5 +46,6 @@ Docs/
 #copy
 *_copy.*
 
+# MacOS
 .DS_Store
 **/.DS_Store
