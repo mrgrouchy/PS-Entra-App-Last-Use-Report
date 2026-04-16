@@ -1,5 +1,5 @@
 * text=auto
-*.ps1 text eol=crlf
-*.psm1 text eol=crlf
-*.psd1 text eol=crlf
+*.ps1 text
+*.psm1 text
+*.psd1 text
 *.md text eol=lf
